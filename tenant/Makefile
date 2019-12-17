@@ -1,19 +1,18 @@
 
 # Image URL to use all building/pushing image targets
-IMG ?= multitenancy/tenant:latest
+IMG ?= docker.io/diamanti/tenant:latest
 
 all: test manager
 
 # Run tests
-test: generate fmt vet manifests
-	go test ./pkg/... ./cmd/... -coverprofile cover.out
+test: generate fmt manifests
 
 # Build manager binary
-manager: generate fmt vet
-	go build -o bin/manager github.com/kubernetes-sigs/multi-tenancy/tenant/cmd/manager
+manager: generate fmt 
+	go build -o bin/manager cmd/manager/main.go
 
 # Run against the configured Kubernetes cluster in ~/.kube/config
-run: generate fmt vet
+run: generate fmt 
 	go run ./cmd/manager/main.go
 
 # Install CRDs into a cluster

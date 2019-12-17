@@ -6,10 +6,11 @@ package lsp
 
 import (
 	"context"
-	"fmt"
 
 	"golang.org/x/tools/internal/lsp/protocol"
+	"golang.org/x/tools/internal/lsp/source"
 	"golang.org/x/tools/internal/span"
+	errors "golang.org/x/xerrors"
 )
 
 func (s *Server) changeFolders(ctx context.Context, event protocol.WorkspaceFoldersChangeEvent) error {
@@ -18,25 +19,39 @@ func (s *Server) changeFolders(ctx context.Context, event protocol.WorkspaceFold
 		if view != nil {
 			view.Shutdown(ctx)
 		} else {
-			return fmt.Errorf("view %s for %v not found", folder.Name, folder.URI)
+			return errors.Errorf("view %s for %v not found", folder.Name, folder.URI)
 		}
 	}
-
-	for _, folder := range event.Added {
-		if err := s.addView(ctx, folder.Name, span.NewURI(folder.URI)); err != nil {
-			return err
-		}
-	}
+	s.addFolders(ctx, event.Added)
 	return nil
 }
 
-func (s *Server) addView(ctx context.Context, name string, uri span.URI) error {
-	view := s.session.NewView(ctx, name, uri)
+func (s *Server) addView(ctx context.Context, name string, uri span.URI) (source.View, source.Snapshot, error) {
 	s.stateMu.Lock()
 	state := s.state
 	s.stateMu.Unlock()
-	if state >= serverInitialized {
-		s.fetchConfig(ctx, view)
+	if state < serverInitialized {
+		return nil, nil, errors.Errorf("addView called before server initialized")
+	}
+
+	options := s.session.Options()
+	if err := s.fetchConfig(ctx, name, uri, &options); err != nil {
+		return nil, nil, err
+	}
+	return s.session.NewView(ctx, name, uri, options)
+}
+
+func (s *Server) updateConfiguration(ctx context.Context, changed interface{}) error {
+	// go through all the views getting the config
+	for _, view := range s.session.Views() {
+		options := s.session.Options()
+		if err := s.fetchConfig(ctx, view.Name(), view.Folder(), &options); err != nil {
+			return err
+		}
+		if _, err := view.SetOptions(ctx, options); err != nil {
+			return err
+		}
+		go s.diagnoseSnapshot(view.Snapshot())
 	}
 	return nil
 }

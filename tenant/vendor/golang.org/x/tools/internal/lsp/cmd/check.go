@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/tools/internal/span"
+	errors "golang.org/x/xerrors"
 )
 
 // check implements the check verb for gopls.
@@ -55,19 +56,19 @@ func (c *check) Run(ctx context.Context, args ...string) error {
 		checking[uri] = file
 	}
 	// now wait for results
-	//TODO: maybe conn.ExecuteCommand(ctx, &protocol.ExecuteCommandParams{Command: "gopls-wait-idle"})
+	// TODO: maybe conn.ExecuteCommand(ctx, &protocol.ExecuteCommandParams{Command: "gopls-wait-idle"})
 	for _, file := range checking {
 		select {
 		case <-file.hasDiagnostics:
 		case <-time.After(30 * time.Second):
-			return fmt.Errorf("timed out waiting for results from %v", file.uri)
+			return errors.Errorf("timed out waiting for results from %v", file.uri)
 		}
 		file.diagnosticsMu.Lock()
 		defer file.diagnosticsMu.Unlock()
 		for _, d := range file.diagnostics {
 			spn, err := file.mapper.RangeSpan(d.Range)
 			if err != nil {
-				return fmt.Errorf("Could not convert position %v for %q", d.Range, d.Message)
+				return errors.Errorf("Could not convert position %v for %q", d.Range, d.Message)
 			}
 			fmt.Printf("%v: %v\n", spn, d.Message)
 		}

@@ -25,7 +25,7 @@ import (
 // prefix (i.e., prefix is true), the namespace of the tenantnamespace instance is used
 // to prefix the name in the spec. If the name in the spec is empty, the name of the
 // tenantnamespace instance is used.
-func GetTenantNamespaceName(prefix bool, instance *tenancyv1alpha1.TenantNamespace) string {
+func GetTenantNamespaceName(prefix bool, instance tenancyv1alpha1.TenantNamespace) string {
 	name := instance.Spec.Name
 	if name == "" {
 		name = instance.Name

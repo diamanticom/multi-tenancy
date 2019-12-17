@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -46,26 +45,11 @@ func Add(mgr manager.Manager) error {
 		secretName = "webhook-server-secret"
 	}
 
+	temp_bool := true
 	svr, err := webhook.NewServer("foo-admission-server", mgr, webhook.ServerOptions{
 		// TODO(user): change the configuration of ServerOptions based on your need.
-		Port:    9876,
-		CertDir: "/tmp/cert",
-		BootstrapOptions: &webhook.BootstrapOptions{
-			Secret: &types.NamespacedName{
-				Namespace: ns,
-				Name:      secretName,
-			},
-
-			Service: &webhook.Service{
-				Namespace: ns,
-				Name:      "webhook-server-service",
-				// Selectors should select the pods that runs this webhook server.
-				Selectors: map[string]string{
-					"control-plane": "controller-manager",
-				},
-			},
-			ValidatingWebhookConfigName: "tenant-validating-webhook-cfg",
-		},
+		Port:                          9876,
+		DisableWebhookConfigInstaller: &temp_bool,
 	})
 	if err != nil {
 		return err

@@ -19,8 +19,12 @@ package tenant
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
 
-	tenancyv1alpha1 "github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/diamanticom/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1"
+	"io/ioutil"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -129,6 +133,30 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		Name:       instance.Name,
 		UID:        instance.UID,
 	}
+	{
+		/*
+			             XXX: Call Cluster API to create Cluster, pass the RBAC yamls for manifests as parameters
+					 get Kubeconfig store in etcd/map
+		*/
+		/*
+			targetkubeconfig,err := CreateSA(); err != nil {
+				return
+			}
+
+
+			cr := &rbacv1.ClusterRole{
+			}
+			if err := r.clientApply(cr); err != nil {
+				return reconcile.Result{}, err
+			}
+			crbindingName := fmt.Sprintf("%s-tenant-admins-rolebinding", instance.Name)
+			crbinding := &rbacv1.ClusterRoleBinding{
+			}
+			if err = r.clientApply(crbinding); err != nil {
+				return reconcile.Result{}, err
+			}
+		*/
+	}
 
 	// Create tenantAdminNamespace
 	if instance.Spec.TenantAdminNamespaceName != "" {
@@ -172,7 +200,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			}
 		}
 	}
-	// Create RBACs for tenantAdmins.
+	// Create RBACs for tenantAdmins, allow them to access tenant CR and tenantAdminNamespace.
 	if instance.Spec.TenantAdmins != nil {
 		// First, create cluster roles to allow them to access tenant CR and tenantAdminNamespace.
 		crName := fmt.Sprintf("%s-tenant-admin-role", instance.Name)
@@ -266,6 +294,44 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			return reconcile.Result{}, err
 		}
 	}
+	/*
+		masterkubeconfig, err := CreateSA()
+		if err != nil {
+			return reconcile.Result{}, err
+		}*/
 
 	return reconcile.Result{}, nil
+}
+
+func CreateSA(SA string, NS string) ([]byte, error) {
+
+	dir, err := ioutil.TempDir("/", "kubeconfig")
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(dir)
+
+	file, err := ioutil.TempFile(dir, "kubeconfig")
+	if err != nil {
+		panic(err)
+	}
+
+	binary, lookErr := exec.LookPath("kubernetes_add_service_account_kubeconfig")
+	if lookErr != nil {
+		return nil, (lookErr)
+	}
+
+	args := []string{"kubernetes_add_service_account_kubeconfig.sh", "SA", "NS", file.Name()}
+
+	env := os.Environ()
+
+	execErr := syscall.Exec(binary, args, env)
+	if execErr != nil {
+		return nil, (execErr)
+	}
+	dat, errread := ioutil.ReadFile(file.Name())
+	if errread != nil {
+		return nil, errread
+	}
+	return dat, nil
 }

@@ -20,9 +20,10 @@ import (
 	"flag"
 	"os"
 
-	"github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/apis"
-	"github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/controller"
-	"github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/webhook"
+	"github.com/diamanticom/multi-tenancy/tenant/pkg/apis"
+	"github.com/diamanticom/multi-tenancy/tenant/pkg/controller"
+	//"github.com/diamanticom/multi-tenancy/tenant/pkg/tenantdb"
+	//"github.com/diamanticom/multi-tenancy/tenant/pkg/webhook"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -68,12 +69,15 @@ func main() {
 		log.Error(err, "unable to register controllers to the manager")
 		os.Exit(1)
 	}
-
-	log.Info("setting up webhooks")
-	if err := webhook.AddToManager(mgr); err != nil {
-		log.Error(err, "unable to register webhooks to the manager")
-		os.Exit(1)
-	}
+	/*
+		log.Info("setting up webhooks")
+		if err := webhook.AddToManager(mgr); err != nil {
+			log.Error(err, "unable to register webhooks to the manager")
+			os.Exit(1)
+		}
+	*/
+	//Connect to etcd Key Value store
+	//tenantdb.ConnecttoEtcd()
 
 	// Start the Cmd
 	log.Info("Starting the Cmd.")

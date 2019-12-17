@@ -17,7 +17,7 @@ limitations under the License.
 package controller
 
 import (
-	"github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/controller/tenant"
+	"github.com/diamanticom/multi-tenancy/tenant/pkg/controller/tenant"
 )
 
 func init() {
