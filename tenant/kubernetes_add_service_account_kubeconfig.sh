@@ -13,6 +13,7 @@ YELLOW="\e[01;33m"
 BLUE="\e[01;34m"
 COLOROFF="\e[00m"
 
+read a
 # Add user to k8s using service account
 if [[ -z "$1" ]] || [[ -z "$2" ]] || [[ -z "$3" ]] || [[ -z "$4" ]]; then
  echo "usage: $0 <service_account_name> <namespace> <filename> <target_folder>"

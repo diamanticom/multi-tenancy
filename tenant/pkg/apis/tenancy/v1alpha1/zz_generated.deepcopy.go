@@ -186,6 +186,11 @@ func (in *TenantSpec) DeepCopyInto(out *TenantSpec) {
 		*out = make([]v1.Subject, len(*in))
 		copy(*out, *in)
 	}
+	if in.TenantNodes != nil {
+		in, out := &in.TenantNodes, &out.TenantNodes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

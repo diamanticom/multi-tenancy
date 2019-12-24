@@ -101,6 +101,35 @@ func (r *ReconcileTenant) clientApply(obj runtime.Object) error {
 	return err
 }
 
+func (r *Reconciler) deleteExternalResources(instance *tenancyv1alpha1.Tenant) error {
+	//
+	// delete any external resources associated with the tenant
+	//
+	// Ensure that delete implementation is idempotent and safe to invoke
+	// multiple types for same object.
+	fmt.Printf("XXX-----Deleting Tenancy:%s-----XXX", instance.Name)
+}
+
+// Helper functions to check and remove string from a slice of strings.
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(slice []string, s string) (result []string) {
+	for _, item := range slice {
+		if item == s {
+			continue
+		}
+		result = append(result, item)
+	}
+	return
+}
+
 // Reconcile reads that state of the cluster for a Tenant object and makes changes based on the state read
 // and what is in the Tenant.Spec
 // Automatically generate RBAC rules to allow the Controller to read and write related resources
@@ -133,29 +162,95 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		Name:       instance.Name,
 		UID:        instance.UID,
 	}
+
+	// name of our custom finalizer
+	tenantFinalizerName := "tenancy.finalizers.diamanti.com"
+
+	// examine DeletionTimestamp to determine if object is under deletion
+	if instance.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// registering our finalizer.
+		if !containsString(instance.ObjectMeta.Finalizers, tenantFinalizerName) {
+			instance.ObjectMeta.Finalizers = append(instance.ObjectMeta.Finalizers, tenantFinalizerName)
+			if err := r.Update(context.Background(), instance); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if containsString(instance.ObjectMeta.Finalizers, tenantFinalizerName) {
+			// our finalizer is present, so lets handle any external dependency
+			if err := r.deleteExternalResources(instance); err != nil {
+				// if fail to delete the external dependency here, return with error
+				// so that it can be retried
+				return reconcile.Result{}, err
+			}
+
+			// remove our finalizer from the list and update it.
+			instance.ObjectMeta.Finalizers = removeString(instance.ObjectMeta.Finalizers, tenantFinalizerName)
+			if err := r.Update(context.Background(), instance); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
+
+		return reconcile.Result{}, err
+	}
+
 	{
 		/*
 			             XXX: Call Cluster API to create Cluster, pass the RBAC yamls for manifests as parameters
 					 get Kubeconfig store in etcd/map
 		*/
-		/*
-			targetkubeconfig,err := CreateSA(); err != nil {
-				return
-			}
+		/*targetkubeconfig,err := CreateSA(); err != nil {
+			return
+		}*/
 
-
-			cr := &rbacv1.ClusterRole{
-			}
-			if err := r.clientApply(cr); err != nil {
-				return reconcile.Result{}, err
-			}
-			crbindingName := fmt.Sprintf("%s-tenant-admins-rolebinding", instance.Name)
-			crbinding := &rbacv1.ClusterRoleBinding{
-			}
-			if err = r.clientApply(crbinding); err != nil {
-				return reconcile.Result{}, err
-			}
-		*/
+		all := []string{"*"}
+		rules := rbacv1.PolicyRule{
+			Verbs:           all,
+			APIGroups:       all,
+			Resources:       all,
+			NonResourceURLs: all,
+		}
+		cr := &rbacv1.ClusterRole{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "ClusterRole",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "tenant-admins-clusterrole",
+				Namespace: "kube-system",
+			},
+			Rules: rules,
+		}
+		if err := r.clientApply(cr); err != nil {
+			return reconcile.Result{}, err
+		}
+		crbindingName := fmt.Sprintf("%s-tenant-admins-rolebinding", instance.Name)
+		crbinding := &rbacv1.ClusterRoleBinding{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "ClusterRoleBinding",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "tenant-admins-clusterrolebinding",
+				Namespace: "kube-system",
+			},
+			RuleRef: rbacv1.RoleRef{
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+				APIGroup: "rbac.authorization.k8s.io",
+			},
+			Subjects: rbacv1.Subjects{
+				Kind:      "ServiceAccount",
+				Name:      targetSA,
+				Namespace: "kube-system",
+			},
+		}
+		if err = r.clientApply(crbinding); err != nil {
+			return reconcile.Result{}, err
+		}
 	}
 
 	// Create tenantAdminNamespace
@@ -294,44 +389,41 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			return reconcile.Result{}, err
 		}
 	}
-	/*
-		masterkubeconfig, err := CreateSA()
-		if err != nil {
-			return reconcile.Result{}, err
-		}*/
+	masterkubeconfig, err := CreateSA(instance.Spec.TenantAdmins, instance.Spec.TenantAdminNamespaceName)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	tdb := TenantData{MasterKubeConfig: masterkubeconfig,
+		TargetKubeConfig: targetkubeconfig,
+		TargetSA:         targetSA,
+		MasterSA:         instance.Spec.TenantAdmins,
+	}
+	key := tenantdb.CreateTenantKey(instance.Spec.TenantAdminNamespaceName)
+	if err := tenantdb.TenantStoreKey(key, &tdb); err != nil {
+		panic(err)
+	}
 
 	return reconcile.Result{}, nil
 }
 
-func CreateSA(SA string, NS string) ([]byte, error) {
-
-	dir, err := ioutil.TempDir("/", "kubeconfig")
+func CreateSA(SA string, NS string) (string, error) {
+	var out bytes.Buffer
+	dir, err := ioutil.TempDir("/tmp", "kubeconfig")
 	if err != nil {
 		panic(err)
 	}
 	defer os.Remove(dir)
+	fmt.Println(dir)
 
 	file, err := ioutil.TempFile(dir, "kubeconfig")
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println(file.Name())
 
-	binary, lookErr := exec.LookPath("kubernetes_add_service_account_kubeconfig")
-	if lookErr != nil {
-		return nil, (lookErr)
-	}
+	cmd := exec.Command("./kubernetes_add_service_account_kubeconfig.sh", SA, NS, file.Name())
+	cmd.Stdout = &out
+	execErr := cmd.Run()
+	return out.String(), execErr
 
-	args := []string{"kubernetes_add_service_account_kubeconfig.sh", "SA", "NS", file.Name()}
-
-	env := os.Environ()
-
-	execErr := syscall.Exec(binary, args, env)
-	if execErr != nil {
-		return nil, (execErr)
-	}
-	dat, errread := ioutil.ReadFile(file.Name())
-	if errread != nil {
-		return nil, errread
-	}
-	return dat, nil
 }

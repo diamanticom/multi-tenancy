@@ -43,6 +43,11 @@ spec:
               items:
                 type: object
               type: array
+            tenantNodes:
+              description: List of Hostnames that are a part of the tenant
+              items:
+                type: string
+              type: array
           type: object
         status:
           type: object
