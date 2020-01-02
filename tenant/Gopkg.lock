@@ -2,12 +2,27 @@
 
 
 [[projects]]
-  digest = "1:ec5209afc7f1ee3b70b7d80f7eabbd1e683cf30a1847ac012cce5f94cd27eb69"
+  digest = "1:7e74a8886343d1324c0e8e8e6c1698cebb442796a5f3cf90235bdd115e90f313"
   name = "cloud.google.com/go"
   packages = ["compute/metadata"]
   pruneopts = "T"
-  revision = "d1ee711ee996fa74abaffbdb572963f368f215a9"
-  version = "v0.49.0"
+  revision = "e5804108aed715c49f731aab1a847f063fb23681"
+  version = "v0.50.0"
+
+[[projects]]
+  digest = "1:83ab9c04a3c7a43a516e9ca97c7cc4295623142649dec5e441f4f48e44369ebe"
+  name = "github.com/Azure/go-autorest"
+  packages = [
+    "autorest",
+    "autorest/adal",
+    "autorest/azure",
+    "autorest/date",
+    "logger",
+    "tracing",
+  ]
+  pruneopts = "T"
+  revision = "21d4b01533b1005be0d020da67a6d3f8ebdf0141"
+  version = "v13.3.1"
 
 [[projects]]
   digest = "1:147748cfa709da38076c3df47f6bca6814c8ced6cba510065ec03f2120cc4819"
@@ -50,22 +65,12 @@
   version = "v1.1.1"
 
 [[projects]]
-  branch = "master"
-  digest = "1:ad6361078a5b00541333755f1f1f34d65783a0bdec0bf426b84583a0e488bcf3"
-  name = "github.com/diamanticom/multi-tenancy"
-  packages = [
-    "tenant/pkg/apis",
-    "tenant/pkg/apis/tenancy/v1alpha1",
-    "tenant/pkg/controller",
-    "tenant/pkg/controller/tenant",
-    "tenant/pkg/controller/tenantnamespace",
-    "tenant/pkg/util",
-    "tenant/pkg/webhook/default_server",
-    "tenant/pkg/webhook/default_server/tenant/validating",
-    "tenant/pkg/webhook/default_server/tenantnamespace/validating",
-  ]
+  digest = "1:6b014c67cb522566c30ef02116f9acb50cd60954708cf92c6654e2985696db18"
+  name = "github.com/dgrijalva/jwt-go"
+  packages = ["."]
   pruneopts = "T"
-  revision = "eb2bb3dc905e877fedb76178058fd72aa522a6c7"
+  revision = "06ea1031745cb8b3dab3f6a236daf2b0aa468b7e"
+  version = "v3.2.0"
 
 [[projects]]
   digest = "1:8a9839ed7b3aa2476636d9783048e23e5938bb548468c0fc9c0c6ba031ce344e"
@@ -103,12 +108,12 @@
   version = "v0.1.1"
 
 [[projects]]
-  digest = "1:5493dc98747430493c8f015d42274f94e100a8f204a493d18b087ee405597d82"
+  digest = "1:7cd09120013b775abea9f72c7b94aa2ddf91ebe78bdcfae9993ff286eda0c73a"
   name = "github.com/gobuffalo/flect"
   packages = ["."]
   pruneopts = "T"
-  revision = "0a3cf2268bc5eae46015fc680e8ca07a8a95f34c"
-  version = "v0.1.7"
+  revision = "89744b3e498c96c5566f5c86c032207ff49c3b96"
+  version = "v0.2.0"
 
 [[projects]]
   digest = "1:6ba54872416168c7f2a8349a681f919ead947cacde2d8e663dfbafeeaf13b17a"
@@ -123,11 +128,11 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:c951a6c70a074efbfa0c3525c52953e3a0ec667df520ecac6117235fa5e584ce"
+  digest = "1:947fb8d3e0f2e57cec979c41729ce587c024300df0ef7999ec173a39bacbc8a8"
   name = "github.com/golang/groupcache"
   packages = ["lru"]
   pruneopts = "T"
-  revision = "611e8accdfc92c4187d399e95ce826046d4c8d73"
+  revision = "215e87163ea771ffa998a96c611387313bb5a403"
 
 [[projects]]
   digest = "1:ee6b8c03e5ab6cf9628a3c538430d007f8534483dc46c7ff5955a4359d5ef865"
@@ -178,6 +183,30 @@
   pruneopts = "T"
   revision = "ab0dd09aa10e2952b28e12ecd35681b20463ebab"
   version = "v0.3.1"
+
+[[projects]]
+  digest = "1:6044d58d346a9d8912024d47def18b980a1fc499a5b8ebee7a99e18cf2f0bb61"
+  name = "github.com/gophercloud/gophercloud"
+  packages = [
+    ".",
+    "openstack",
+    "openstack/identity/v2/tenants",
+    "openstack/identity/v2/tokens",
+    "openstack/identity/v3/tokens",
+    "openstack/utils",
+    "pagination",
+  ]
+  pruneopts = "T"
+  revision = "c99da270f3181ddc1b3d5c5e7d040971024cb71a"
+  version = "v0.7.0"
+
+[[projects]]
+  digest = "1:c3b4b286b0fd6a625a9c5fd6829bc5140dc5614388e0d33615213c27a061e7f1"
+  name = "github.com/gorilla/mux"
+  packages = ["."]
+  pruneopts = "T"
+  revision = "00bdffe0f3c77e27d2cf6f5c70232a2d3e4d9c15"
+  version = "v1.7.3"
 
 [[projects]]
   branch = "master"
@@ -232,27 +261,20 @@
   version = "v1.0"
 
 [[projects]]
-  digest = "1:d78015a9da26d37166a2119592019e8bfe9b24bec60aff4a46db6110070fb1b2"
+  digest = "1:1e5d8fd04f72d46575b44341578192f5a473c23301262c8ea9867bd2f4130687"
   name = "github.com/json-iterator/go"
   packages = ["."]
   pruneopts = "T"
-  revision = "03217c3e97663914aec3faafde50d081f197a0a2"
-  version = "v1.1.8"
+  revision = "acfec88f7a0d5140ace3dcdbee10184e3684a9e1"
+  version = "v1.1.9"
 
 [[projects]]
   branch = "master"
-  digest = "1:13f636f025beeb82a51788e828bbc73853f63044e435beb668672a42f78cb085"
+  digest = "1:82648cb7266ba974281c9499ea1477c5c7d72693d3a9c3e6921bbcfdd5832182"
   name = "github.com/kubernetes-sigs/multi-tenancy"
-  packages = [
-    "tenant/pkg/apis/tenancy/v1alpha1",
-    "tenant/pkg/controller/tenant",
-    "tenant/pkg/controller/tenantnamespace",
-    "tenant/pkg/util",
-    "tenant/pkg/webhook/default_server/tenant/validating",
-    "tenant/pkg/webhook/default_server/tenantnamespace/validating",
-  ]
+  packages = ["tenant/pkg/apis/tenancy/v1alpha1"]
   pruneopts = "T"
-  revision = "b741764aa35a6d9bf906c0132f387dc167fe1b0c"
+  revision = "8beb394a2a4485e624e6a5fce44c7ae311d072f2"
 
 [[projects]]
   digest = "1:a8e3d14801bed585908d130ebfc3b925ba642208e6f30d879437ddfc7bb9b413"
@@ -279,7 +301,7 @@
   version = "1.0.1"
 
 [[projects]]
-  digest = "1:4ae6ad298cdd2fabd18af3fb84333a17f5b062d21796f03b2af402b49c9ebbf7"
+  digest = "1:85d8868ca289740fa46bd2e73d960ae10d28ebae7ce1ea9f51260f6f23472a0d"
   name = "github.com/onsi/ginkgo"
   packages = [
     ".",
@@ -302,11 +324,11 @@
     "types",
   ]
   pruneopts = "T"
-  revision = "ce5d301e555bb672c693c099ba6ca5087b06c0b4"
-  version = "v1.10.3"
+  revision = "388ac7e50a3abf0798010091d5094171f4aefc0b"
+  version = "v1.11.0"
 
 [[projects]]
-  digest = "1:8d602c2fd85dc933401e2334e28caab8d998fecea40940f842087180ebe75e77"
+  digest = "1:2ac5f3e2bb72c27ccae60bbd0036529d8157970cc9506f84a0d80a54529514db"
   name = "github.com/onsi/gomega"
   packages = [
     ".",
@@ -325,8 +347,8 @@
     "types",
   ]
   pruneopts = "T"
-  revision = "f9a52764bd5a0fd2d201bcca584351d03b72f8da"
-  version = "v1.7.1"
+  revision = "22a9feb22fe99439870ed2e013401725a9d495df"
+  version = "v1.8.1"
 
 [[projects]]
   digest = "1:e5d0bd87abc2781d14e274807a470acd180f0499f8bf5bb18606e9ec22ad9de9"
@@ -373,12 +395,12 @@
   version = "v0.9.4"
 
 [[projects]]
-  branch = "master"
   digest = "1:ff7a5f44653e65cf1a0577bbe3f2cdaf514930348f6df581bbd687bbe35ead5b"
   name = "github.com/prometheus/client_model"
   packages = ["go"]
   pruneopts = "T"
   revision = "d1d2010b5beead3fa1c5f271a5cf626e40b3ad6e"
+  version = "v0.1.0"
 
 [[projects]]
   digest = "1:910dbd3a9fde514191a0905803664266986e3dd8d29caed93ec7ad9493b634e3"
@@ -432,6 +454,18 @@
   version = "v1.0.5"
 
 [[projects]]
+  branch = "master"
+  digest = "1:20f15e8100dd7e88ae2d82bf48cd2541632b76010a8ca453a574fa8076b51c3f"
+  name = "gitlab.eng.diamanti.com/software/mcm.git"
+  packages = [
+    "dmc/pkg/k8s",
+    "dmc/pkg/serde",
+  ]
+  pruneopts = "T"
+  revision = "3db33991ffe15e8926607114a8c5452185b2b616"
+  source = "git@gitlab.eng.diamanti.com:software/mcm.git"
+
+[[projects]]
   digest = "1:a4b775f4136fe78ab4d2a53aca22f738b664191d6be35fdc2945560ae1d51118"
   name = "go.uber.org/atomic"
   packages = ["."]
@@ -472,11 +506,11 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:0f3810a3b3b2a42b5e86048198cb226dba1101befdd7c96cc103a889a3228b76"
+  digest = "1:1fad86dbe4020dc8251bd5a13dc94a31e7fc74b414449b2fcaa0fe2c4a76af7d"
   name = "golang.org/x/crypto"
   packages = ["ssh/terminal"]
   pruneopts = "T"
-  revision = "e9b2fee46413994441b28dfca259d911d963dfed"
+  revision = "53104e6ec876ad4e22ad27cce588b01392043c1b"
 
 [[projects]]
   branch = "master"
@@ -523,14 +557,14 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:d84218f5cedc832ea02c33ab70b830c22b2db9423394ecc482004fd98b9c7add"
+  digest = "1:f1a3a019d91656cfcf2d9af4927a8da701e923b99f633403e368bdd749d4ce1d"
   name = "golang.org/x/sys"
   packages = [
     "unix",
     "windows",
   ]
   pruneopts = "T"
-  revision = "ac6580df4449443a05718fd7858c1f91ad5f8d20"
+  revision = "c709ea063b76879dc9915358f55d4d77c16ab6d5"
 
 [[projects]]
   digest = "1:0a6103b1dc59b52f7e64a491b398b854c0fcaacde43c25ce468610a64311b72d"
@@ -579,7 +613,7 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:f86daf1e0077094dea86c24786b2d28a4a4b5e8aba62b59775a9fc6c2186249a"
+  digest = "1:9cf4b5161aa9037df406e169abd70e34684205d4e9451ac4899355d7f45c7e2b"
   name = "golang.org/x/tools"
   packages = [
     "go/analysis",
@@ -601,7 +635,18 @@
     "internal/semver",
   ]
   pruneopts = "T"
-  revision = "621d4eef75da74cfd9dec5b23796c4c65d3ab01f"
+  revision = "7b8e75db28f4b09dc0b853eadee5b034956bcb9e"
+
+[[projects]]
+  branch = "master"
+  digest = "1:918a46e4a2fb83df33f668f5a6bd51b2996775d073fce1800d3ec01b0a5ddd2b"
+  name = "golang.org/x/xerrors"
+  packages = [
+    ".",
+    "internal",
+  ]
+  pruneopts = "T"
+  revision = "9bdfabe68543c54f90421aeb9a60ef8061b5b544"
 
 [[projects]]
   digest = "1:1ac5e79c6e170a365f8acb717c51139370e7309c54e796aa63f97e80cbc365b6"
@@ -844,8 +889,12 @@
     "pkg/apis/clientauthentication/v1alpha1",
     "pkg/apis/clientauthentication/v1beta1",
     "pkg/version",
+    "plugin/pkg/client/auth",
+    "plugin/pkg/client/auth/azure",
     "plugin/pkg/client/auth/exec",
     "plugin/pkg/client/auth/gcp",
+    "plugin/pkg/client/auth/oidc",
+    "plugin/pkg/client/auth/openstack",
     "rest",
     "rest/watch",
     "restmapper",
@@ -1019,19 +1068,13 @@
   analyzer-version = 1
   input-imports = [
     "github.com/boltdb/bolt",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/apis",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/controller",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/controller/tenant",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/controller/tenantnamespace",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/util",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/webhook/default_server",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/webhook/default_server/tenant/validating",
-    "github.com/diamanticom/multi-tenancy/tenant/pkg/webhook/default_server/tenantnamespace/validating",
     "github.com/emicklei/go-restful",
+    "github.com/gorilla/mux",
     "github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1",
     "github.com/onsi/ginkgo",
     "github.com/onsi/gomega",
+    "gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/k8s",
+    "gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/serde",
     "golang.org/x/net/context",
     "k8s.io/api/admission/v1beta1",
     "k8s.io/api/admissionregistration/v1beta1",
@@ -1045,9 +1088,11 @@
     "k8s.io/apimachinery/pkg/runtime/schema",
     "k8s.io/apimachinery/pkg/types",
     "k8s.io/apimachinery/pkg/util/validation/field",
+    "k8s.io/client-go/kubernetes",
     "k8s.io/client-go/kubernetes/scheme",
     "k8s.io/client-go/plugin/pkg/client/auth/gcp",
     "k8s.io/client-go/rest",
+    "k8s.io/client-go/tools/clientcmd",
     "k8s.io/client-go/util/retry",
     "k8s.io/client-go/util/workqueue",
     "k8s.io/code-generator/cmd/client-gen",

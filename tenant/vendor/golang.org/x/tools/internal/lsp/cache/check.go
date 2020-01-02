@@ -184,7 +184,7 @@ func (ph *packageHandle) Check(ctx context.Context) (source.Package, error) {
 func (ph *packageHandle) check(ctx context.Context) (*pkg, error) {
 	v := ph.handle.Get(ctx)
 	if v == nil {
-		return nil, errors.Errorf("no package for %s", ph.m.id)
+		return nil, ctx.Err()
 	}
 	data := v.(*packageData)
 	return data.pkg, data.err
@@ -222,11 +222,10 @@ func (ph *packageHandle) cached() (*pkg, error) {
 func (s *snapshot) parseGoHandles(ctx context.Context, files []span.URI, mode source.ParseMode) ([]source.ParseGoHandle, error) {
 	phs := make([]source.ParseGoHandle, 0, len(files))
 	for _, uri := range files {
-		f, err := s.view.GetFile(ctx, uri)
+		fh, err := s.GetFile(ctx, uri)
 		if err != nil {
 			return nil, err
 		}
-		fh := s.Handle(ctx, f)
 		phs = append(phs, s.view.session.cache.ParseGoHandle(fh, mode))
 	}
 	return phs, nil
@@ -331,13 +330,16 @@ func typeCheck(ctx context.Context, fset *token.FileSet, m *metadata, mode sourc
 		return nil, ctx.Err()
 	}
 
-	for _, e := range rawErrors {
-		srcErr, err := sourceError(ctx, fset, pkg, e)
-		if err != nil {
-			log.Error(ctx, "unable to compute error positions", err, telemetry.Package.Of(pkg.ID()))
-			continue
+	// We don't care about a package's errors unless we have parsed it in full.
+	if mode == source.ParseFull {
+		for _, e := range rawErrors {
+			srcErr, err := sourceError(ctx, fset, pkg, e)
+			if err != nil {
+				log.Error(ctx, "unable to compute error positions", err, telemetry.Package.Of(pkg.ID()))
+				continue
+			}
+			pkg.errors = append(pkg.errors, srcErr)
 		}
-		pkg.errors = append(pkg.errors, srcErr)
 	}
 	return pkg, nil
 }

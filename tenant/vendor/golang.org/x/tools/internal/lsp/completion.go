@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"golang.org/x/tools/internal/lsp/protocol"
 	"golang.org/x/tools/internal/lsp/source"
@@ -24,17 +25,16 @@ func (s *Server) completion(ctx context.Context, params *protocol.CompletionPara
 	}
 	snapshot := view.Snapshot()
 	options := view.Options()
-	f, err := view.GetFile(ctx, uri)
+	fh, err := snapshot.GetFile(ctx, uri)
 	if err != nil {
 		return nil, err
 	}
-
 	var candidates []source.CompletionItem
 	var surrounding *source.Selection
-	switch f.Kind() {
+	switch fh.Identity().Kind {
 	case source.Go:
 		options.Completion.FullDocumentation = options.HoverKind == source.FullDocumentation
-		candidates, surrounding, err = source.Completion(ctx, snapshot, f, params.Position, options.Completion)
+		candidates, surrounding, err = source.Completion(ctx, snapshot, fh, params.Position, options.Completion)
 	case source.Mod:
 		candidates, surrounding = nil, nil
 	}
@@ -123,8 +123,12 @@ func toProtocolCompletionItems(candidates []source.CompletionItem, rng protocol.
 			// This is a hack so that the client sorts completion results in the order
 			// according to their score. This can be removed upon the resolution of
 			// https://github.com/Microsoft/language-server-protocol/issues/348.
-			SortText:      fmt.Sprintf("%05d", i),
-			FilterText:    candidate.InsertText,
+			SortText: fmt.Sprintf("%05d", i),
+
+			// Trim address operator (VSCode doesn't like weird characters
+			// in filterText).
+			FilterText: strings.TrimLeft(candidate.InsertText, "&"),
+
 			Preselect:     i == 0,
 			Documentation: candidate.Documentation,
 		}

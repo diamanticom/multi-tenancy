@@ -17,11 +17,11 @@ import (
 	errors "golang.org/x/xerrors"
 )
 
-func Highlight(ctx context.Context, snapshot Snapshot, f File, pos protocol.Position) ([]protocol.Range, error) {
+func Highlight(ctx context.Context, snapshot Snapshot, fh FileHandle, pos protocol.Position) ([]protocol.Range, error) {
 	ctx, done := trace.StartSpan(ctx, "source.Highlight")
 	defer done()
 
-	pkg, pgh, err := getParsedFile(ctx, snapshot, f, WidestCheckPackageHandle)
+	pkg, pgh, err := getParsedFile(ctx, snapshot, fh, WidestCheckPackageHandle)
 	if err != nil {
 		return nil, fmt.Errorf("getting file for Highlight: %v", err)
 	}
@@ -41,6 +41,18 @@ func Highlight(ctx context.Context, snapshot Snapshot, f File, pos protocol.Posi
 	if len(path) == 0 {
 		return nil, errors.Errorf("no enclosing position found for %v:%v", int(pos.Line), int(pos.Character))
 	}
+	// If start==end for astutil.PathEnclosingInterval, the 1-char interval following start is used instead.
+	// As a result, we might not get an exact match so we should check the 1-char interval to the left of the
+	// passed in position to see if that is an exact match.
+	if _, ok := path[0].(*ast.Ident); !ok {
+		if p, _ := astutil.PathEnclosingInterval(file, rng.Start-1, rng.Start-1); p != nil {
+			switch p[0].(type) {
+			case *ast.Ident, *ast.SelectorExpr:
+				path = p // use preceding ident/selector
+			}
+		}
+	}
+
 	switch path[0].(type) {
 	case *ast.ReturnStmt, *ast.FuncDecl, *ast.FuncType, *ast.BasicLit:
 		return highlightFuncControlFlow(ctx, snapshot, m, path)

@@ -16,8 +16,7 @@
 
 // Package dialogflow is an auto-generated package for the
 // Dialogflow API.
-//
-//   NOTE: This package is in alpha. It is not stable, and is likely to change.
+
 //
 // Builds conversational interfaces (for example, chatbots, and voice-powered
 // apps and devices).
@@ -99,4 +98,4 @@ func versionGo() string {
 	return "UNKNOWN"
 }
 
-const versionClient = "20191115"
+const versionClient = "20191216"

@@ -93,13 +93,11 @@ func (i *IdentifierInfo) linkAndSymbolName() (string, string) {
 	switch obj := obj.(type) {
 	case *types.Var:
 		if obj.IsField() {
-			// If the object is a field, and we have an associated selector,
-			// we can determine the struct.
-			if selection, ok := i.pkg.GetTypesInfo().Selections[i.selector]; ok {
-				switch rtyp := deref(selection.Recv()).(type) {
-				case *types.Named:
-					rTypeName = rtyp.Obj().Name()
-				}
+			// If the object is a field, and we have an associated selector
+			// composite literal, or struct, we can determine the link.
+			switch typ := i.enclosing.(type) {
+			case *types.Named:
+				rTypeName = typ.Obj().Name()
 			}
 		}
 	case *types.Func:
@@ -112,7 +110,13 @@ func (i *IdentifierInfo) linkAndSymbolName() (string, string) {
 			case *types.Struct:
 				rTypeName = r.Name()
 			case *types.Named:
-				rTypeName = rtyp.Obj().Name()
+				if named, ok := i.enclosing.(*types.Named); ok {
+					rTypeName = named.Obj().Name()
+				} else if !rtyp.Obj().Exported() {
+					return "", ""
+				} else {
+					rTypeName = rtyp.Obj().Name()
+				}
 			}
 		}
 	}
@@ -208,13 +212,16 @@ func formatGenDecl(node *ast.GenDecl, obj types.Object, typ types.Type) (*HoverI
 
 func formatVar(node ast.Spec, obj types.Object, decl *ast.GenDecl) *HoverInformation {
 	var fieldList *ast.FieldList
-	if spec, ok := node.(*ast.TypeSpec); ok {
+	switch spec := node.(type) {
+	case *ast.TypeSpec:
 		switch t := spec.Type.(type) {
 		case *ast.StructType:
 			fieldList = t.Fields
 		case *ast.InterfaceType:
 			fieldList = t.Methods
 		}
+	case *ast.ValueSpec:
+		return &HoverInformation{source: obj, comment: spec.Doc}
 	}
 	// If we have a struct or interface declaration,
 	// we need to match the object to the corresponding field or method.

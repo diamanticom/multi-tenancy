@@ -38,15 +38,16 @@ type TenantSpec struct {
 	// TenantAdmins are the identities with admin privilege for tenant resources.
 	// +optional
 	TenantAdmins []rbacv1.Subject `json:"tenantAdmins,omitempty"`
-	// List of Hostnames that are a part of the tenant
+	// Name of the Resource Policy for the tenant
 	// +optional
-	TenantNodes []string `json:"tenantNodes,omitempty"`
+	TenantResourcePolicy string `json:"tenantResourcePolicy,omitempty"`
 }
 
 // TenantStatus defines the observed state of Tenant
 type TenantStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	Status string `json:"status,omitempty"`
 }
 
 // +genclient:nonNamespaced

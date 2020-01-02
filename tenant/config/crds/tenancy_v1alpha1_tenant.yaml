@@ -43,13 +43,17 @@ spec:
               items:
                 type: object
               type: array
-            tenantNodes:
-              description: List of Hostnames that are a part of the tenant
-              items:
-                type: string
-              type: array
+            tenantResourcePolicy:
+              description: Name of the Resource Policy for the tenant
+              type: string
           type: object
         status:
+          properties:
+            status:
+              description: 'INSERT ADDITIONAL STATUS FIELD - define observed state
+                of cluster Important: Run "make" to regenerate code after modifying
+                this file'
+              type: string
           type: object
   version: v1alpha1
 status:

@@ -4,7 +4,13 @@ package a
 
 import (
 	"fmt"
+	"go/types"
 	"sync"
+)
+
+var (
+	// x is a variable.
+	x string //@x,hover("x", x)
 )
 
 type A string //@A
@@ -22,4 +28,7 @@ func AStuff() { //@AStuff
 
 	var mu sync.Mutex
 	mu.Lock() //@Lock,hover("Lock", Lock)
+
+	var typ *types.Named
+	typ.Obj().Name() //@Name,hover("Name", Name)
 }

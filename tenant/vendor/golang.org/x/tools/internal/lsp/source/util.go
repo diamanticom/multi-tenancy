@@ -67,8 +67,7 @@ func (s mappedRange) URI() span.URI {
 
 // getParsedFile is a convenience function that extracts the Package and ParseGoHandle for a File in a Snapshot.
 // selectPackage is typically Narrowest/WidestCheckPackageHandle below.
-func getParsedFile(ctx context.Context, snapshot Snapshot, f File, selectPackage PackagePolicy) (Package, ParseGoHandle, error) {
-	fh := snapshot.Handle(ctx, f)
+func getParsedFile(ctx context.Context, snapshot Snapshot, fh FileHandle, selectPackage PackagePolicy) (Package, ParseGoHandle, error) {
 	phs, err := snapshot.PackageHandles(ctx, fh)
 	if err != nil {
 		return nil, nil, err
@@ -81,7 +80,7 @@ func getParsedFile(ctx context.Context, snapshot Snapshot, f File, selectPackage
 	if err != nil {
 		return nil, nil, err
 	}
-	pgh, err := pkg.File(f.URI())
+	pgh, err := pkg.File(fh.Identity().URI)
 	return pkg, pgh, err
 }
 
@@ -143,11 +142,11 @@ func SpecificPackageHandle(desiredID string) PackagePolicy {
 }
 
 func IsGenerated(ctx context.Context, view View, uri span.URI) bool {
-	f, err := view.GetFile(ctx, uri)
+	fh, err := view.Snapshot().GetFile(ctx, uri)
 	if err != nil {
 		return false
 	}
-	ph := view.Session().Cache().ParseGoHandle(view.Snapshot().Handle(ctx, f), ParseHeader)
+	ph := view.Session().Cache().ParseGoHandle(fh, ParseHeader)
 	parsed, _, _, err := ph.Parse(ctx)
 	if err != nil {
 		return false
@@ -388,6 +387,11 @@ func isPointer(T types.Type) bool {
 	return ok
 }
 
+func isVar(obj types.Object) bool {
+	_, ok := obj.(*types.Var)
+	return ok
+}
+
 // deref returns a pointer's element type, traversing as many levels as needed.
 // Otherwise it returns typ.
 func deref(typ types.Type) types.Type {
@@ -436,6 +440,16 @@ func enclosingSelector(path []ast.Node, pos token.Pos) *ast.SelectorExpr {
 	if _, ok := path[0].(*ast.Ident); ok && len(path) > 1 {
 		if sel, ok := path[1].(*ast.SelectorExpr); ok && pos >= sel.Sel.Pos() {
 			return sel
+		}
+	}
+
+	return nil
+}
+
+func enclosingValueSpec(path []ast.Node, pos token.Pos) *ast.ValueSpec {
+	for _, n := range path {
+		if vs, ok := n.(*ast.ValueSpec); ok {
+			return vs
 		}
 	}
 

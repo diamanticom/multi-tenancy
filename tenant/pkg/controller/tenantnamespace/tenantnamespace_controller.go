@@ -21,7 +21,7 @@ import (
 	"fmt"
 
 	tenancyv1alpha1 "github.com/diamanticom/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1"
-	tenantutil "github.com/diamanticom/multi-tenancy/tenant/pkg/util"
+	//tenantutil "github.com/diamanticom/multi-tenancy/tenant/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -147,11 +147,11 @@ func (r *ReconcileTenantNamespace) Reconcile(request reconcile.Request) (reconci
 	}
 
 	// Find the tenant of this instance
-	requireNamespacePrefix := false
+	//requireNamespacePrefix := false
 	var tenantName string
 	for _, each := range tenantList.Items {
 		if each.Spec.TenantAdminNamespaceName == instance.Namespace {
-			requireNamespacePrefix = each.Spec.RequireNamespacePrefix
+			//requireNamespacePrefix = each.Spec.RequireNamespacePrefix
 			tenantName = each.Name
 			break
 		}
@@ -178,7 +178,8 @@ func (r *ReconcileTenantNamespace) Reconcile(request reconcile.Request) (reconci
 	}
 
 	// In case namespace already exists
-	tenantNsName := tenantutil.GetTenantNamespaceName(requireNamespacePrefix, *instance)
+	//	tenantNsName := tenantutil.GetTenantNamespaceName(requireNamespacePrefix, instance)
+	tenantNsName := ""
 	expectedOwnerRef := metav1.OwnerReference{
 		APIVersion: tenancyv1alpha1.SchemeGroupVersion.String(),
 		Kind:       "TenantNamespace",

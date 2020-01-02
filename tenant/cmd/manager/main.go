@@ -22,7 +22,7 @@ import (
 
 	"github.com/diamanticom/multi-tenancy/tenant/pkg/apis"
 	"github.com/diamanticom/multi-tenancy/tenant/pkg/controller"
-	"github.com/diamanticom/multi-tenancy/tenant/pkg/webhook"
+	//"github.com/diamanticom/multi-tenancy/tenant/pkg/webhook"
 	"github.com/diamanticom/multi-tenancy/tenant/tenantdb"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -69,11 +69,12 @@ func main() {
 		log.Error(err, "unable to register controllers to the manager")
 		os.Exit(1)
 	}
-	log.Info("setting up webhooks")
-	if err := webhook.AddToManager(mgr); err != nil {
-		log.Error(err, "unable to register webhooks to the manager")
-		os.Exit(1)
-	}
+	/*
+		log.Info("setting up webhooks")
+		if err := webhook.AddToManager(mgr); err != nil {
+			log.Error(err, "unable to register webhooks to the manager")
+			os.Exit(1)
+		}*/
 	//Connect to etcd Key Value store
 	tenantdb.ConnecttoBolt()
 
