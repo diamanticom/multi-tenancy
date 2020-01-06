@@ -20,13 +20,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"k8s.io/client-go/rest"
 	"os"
 	"os/exec"
 
+	"github.com/diamanticom/multi-tenancy/tenant/clusterapi"
 	tenancyv1alpha1 "github.com/diamanticom/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1"
 	"github.com/diamanticom/multi-tenancy/tenant/tenantdb"
-	"gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/serde"
 	"io/ioutil"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -112,7 +111,7 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 	// multiple types for same object.
 	fmt.Printf("XXX-----Deleting Tenancy:%s-----XXX", instance.Name)
 	//Call Cluster Delete here
-	DeleteCluster()
+	clusterapi.DeleteCluster()
 
 	key := tenantdb.CreateTenantKey(instance.Name)
 	return tenantdb.TenantDeleteKey(key)
@@ -138,91 +137,6 @@ func removeString(slice []string, s string) (result []string) {
 	return
 }
 
-func DeleteCluster() {
-
-}
-
-// Write Cluster API code here, return kubeconfig
-func CreateCluster() (serde.Provider, string) {
-	// creates the in-cluster config
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		panic(err.Error())
-	}
-
-	// create the clientset
-	c, err := serde.NewProvider(config)
-	if err != nil {
-		panic(err.Error())
-	}
-	// Mock the kubeconfig for now
-	return c, "Testing"
-}
-
-// CreateServiceAccount creates a DMC specific service account that links to cluster admin role
-
-func CreateServiceAccount(k serde.Provider, name string, ns string) error {
-	client, err := k.GetClient()
-	if err != nil {
-		panic(err)
-	}
-	obj := &corev1.ServiceAccount{}
-	obj.Name = name
-	obj.Kind = "ServiceAccount"
-	obj.APIVersion = "v1"
-	obj.Namespace = ns
-
-	return client.Create(context.Background(), obj)
-}
-
-// DeleteServiceAccount deletes DMC related service accounts from the registered cluster
-func DeleteServiceAccount(k serde.Provider, name string, ns string) error {
-	client, err := k.GetClient()
-	if err != nil {
-		panic(err)
-	}
-
-	obj := &corev1.ServiceAccount{}
-	obj.Name = name
-	obj.Kind = "ServiceAccount"
-	obj.APIVersion = "v1"
-	obj.Namespace = ns
-
-	return client.Delete(context.Background(), obj)
-}
-
-func DeleteClusterRoleBinding(k serde.Provider, crb *rbacv1.ClusterRoleBinding) error {
-	client, err := k.GetClient()
-	if err != nil {
-		panic(err)
-	}
-	return client.Delete(context.Background(), crb)
-}
-
-func CreateClusterRoleBinding(k serde.Provider, crb *rbacv1.ClusterRoleBinding) error {
-	client, err := k.GetClient()
-	if err != nil {
-		panic(err)
-	}
-	return client.Create(context.Background(), crb)
-}
-
-func DeleteClusterRole(k serde.Provider, cr *rbacv1.ClusterRole) error {
-	client, err := k.GetClient()
-	if err != nil {
-		panic(err)
-	}
-	return client.Delete(context.Background(), cr)
-}
-
-func CreateClusterRole(k serde.Provider, cr *rbacv1.ClusterRole) error {
-	client, err := k.GetClient()
-	if err != nil {
-		panic(err)
-	}
-	return client.Create(context.Background(), cr)
-}
-
 // Reconcile reads that state of the cluster for a Tenant object and makes changes based on the state read
 // and what is in the Tenant.Spec
 // Automatically generate RBAC rules to allow the Controller to read and write related resources
@@ -235,7 +149,6 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 	var targetkubeconfig, masterkubeconfig []string
 	// Fetch the Tenant instance
 	instance := &tenancyv1alpha1.Tenant{}
-	fmt.Println("XXXX------In the Reconcile-----XXXX")
 	// Tenant is a cluster scoped CR, we should clear the namespace field in request
 	request.NamespacedName.Namespace = ""
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
@@ -290,7 +203,6 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		return reconcile.Result{}, err
 	}
 	// You cannot change tenancy names in Updates. No way to handle it. It will be treated as a create
-	fmt.Println("XXXX------In the Reconcile-----XXXX2")
 	if err := tenantdb.TenantGetKey(instance.Name); err != nil {
 		// Handle Updates Here, only allow tenantAdmin Add/Delete/renames
 
@@ -298,15 +210,11 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 	} else {
 		//Remote Cluster stuff
 		{
-			/*
-				XXX: Call Cluster API to create Cluster, pass the RBAC yamls for manifests as parameters
-				get Kubeconfig store in etcd/map
-			*/
-			clusterclient, kubeconfig := CreateCluster()
+			clusterclient, kubeconfig := clusterapi.CreateCluster()
 			targetkubeconfig = append(targetkubeconfig, kubeconfig)
 
 			for _, x := range instance.Spec.TenantAdmins {
-				if err := CreateServiceAccount(clusterclient, x.Name, "kube-system"); err != nil {
+				if err := clusterapi.CreateServiceAccount(clusterclient, x.Name, "kube-system"); err != nil {
 					return reconcile.Result{}, err
 				}
 
@@ -330,7 +238,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 					},
 					Rules: temprules,
 				}
-				if err := CreateClusterRole(clusterclient, cr); err != nil {
+				if err := clusterapi.CreateClusterRole(clusterclient, cr); err != nil {
 					return reconcile.Result{}, err
 				}
 				tempsubjects := make([]rbacv1.Subject, 0)
@@ -356,7 +264,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 					},
 					Subjects: tempsubjects,
 				}
-				if err := CreateClusterRoleBinding(clusterclient, crbinding); err != nil {
+				if err := clusterapi.CreateClusterRoleBinding(clusterclient, crbinding); err != nil {
 					return reconcile.Result{}, err
 				}
 			}
@@ -516,7 +424,6 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			panic(err)
 		}
 	}
-	fmt.Println("XXXX------In the Reconcile-----XXXX3")
 	return reconcile.Result{}, nil
 
 }

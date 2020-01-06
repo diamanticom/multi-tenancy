@@ -220,6 +220,7 @@ spec:
         - containerPort: 9876
           name: webhook-server
           protocol: TCP
+        - port: 8090
         resources:
           limits:
             cpu: 100m

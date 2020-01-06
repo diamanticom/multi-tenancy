@@ -5,6 +5,7 @@ FROM golang:1.10.3 as builder
 WORKDIR /go/src/github.com/diamanticom/multi-tenancy/tenant
 COPY pkg/    pkg/
 COPY tenantdb/    tenantdb/
+COPY clusterapi/    clusterapi/
 COPY tools/    tools/
 COPY cmd/    cmd/
 COPY vendor/ vendor/
@@ -18,4 +19,6 @@ FROM ubuntu:latest
 WORKDIR /
 COPY --from=builder /go/src/github.com/diamanticom/multi-tenancy/tenant/manager .
 COPY --from=builder /go/src/github.com/diamanticom/multi-tenancy/tenant/tools .
+RUN chmod +x kubernetes_add_service_account_kubeconfig.sh
+EXPOSE 8090
 ENTRYPOINT ["/manager"]

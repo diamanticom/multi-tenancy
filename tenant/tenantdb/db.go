@@ -29,8 +29,8 @@ func homeLink(w http.ResponseWriter, r *http.Request) {
 
 func initapi() {
 	router := mux.NewRouter().StrictSlash(true)
-	router.HandleFunc("/events/{name}", getOne).Methods("GET")
-	http.ListenAndServe(":8080", router)
+	router.HandleFunc("/tenants/{name}", getOne).Methods("GET")
+	http.ListenAndServe(":8090", router)
 }
 
 func getOne(w http.ResponseWriter, r *http.Request) {
@@ -44,11 +44,11 @@ func ConnecttoBolt() {
 	var err error
 	log.Info("Opening boltdb")
 
-	TenantStore, err = bolt.Open("/tenant.db", 0644, nil)
+	TenantStore, err = bolt.Open("/tmp/tenant.db", 0644, nil)
 	if err != nil {
 		panic(err)
 	}
-	initapi()
+	go initapi()
 }
 
 func CreateTenantKey(name string) string {
