@@ -9,19 +9,24 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var targetclient serde.Provider
+
 func DeleteCluster() {
 
+}
+
+func GetCluster() serde.Provider {
+	return targetclient
 }
 
 // Write Cluster API code here, return kubeconfig
 func CreateCluster() (serde.Provider, string) {
 
 	// use the current context in kubeconfig
-	config, err := clientcmd.BuildConfigFromFlags("", "/Users/kgunjikar/code/src/capi-quickstart-azure.kubeconfig")
+	config, err := clientcmd.BuildConfigFromFlags("", "./capi-quickstart-azure.kubeconfig")
 	if err != nil {
 		panic(err.Error())
 	}
-
 	/*
 		config, err := rest.InClusterConfig()
 		if err != nil {
@@ -33,6 +38,7 @@ func CreateCluster() (serde.Provider, string) {
 	if err != nil {
 		panic(err.Error())
 	}
+	targetclient = c
 	// Mock the kubeconfig for now
 	return c, "Testing"
 }

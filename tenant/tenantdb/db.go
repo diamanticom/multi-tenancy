@@ -24,7 +24,7 @@ const TenantKVStoreNS = "TenantDB"
 var TenantStore *bolt.DB
 
 func homeLink(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Welcome home!")
+	fmt.Fprintf(w, "Welcome to TenantDB !")
 }
 
 func initapi() {
@@ -36,6 +36,8 @@ func initapi() {
 func getOne(w http.ResponseWriter, r *http.Request) {
 	// Get the ID from the url
 	temp := mux.Vars(r)["name"]
+	dummystr := fmt.Sprintf("Querying Tenant db for %s", temp)
+	log.Info(dummystr)
 	tdb := TenantGetKey(temp)
 	json.NewEncoder(w).Encode(tdb)
 }
@@ -44,7 +46,7 @@ func ConnecttoBolt() {
 	var err error
 	log.Info("Opening boltdb")
 
-	TenantStore, err = bolt.Open("/tmp/tenant.db", 0644, nil)
+	TenantStore, err = bolt.Open("/tenant.db", 0644, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -58,7 +60,10 @@ func CreateTenantKey(name string) string {
 func TenantDeleteKey(name string) error {
 	return TenantStore.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(TenantKVStoreNS))
-		return bucket.Delete([]byte(CreateTenantKey(name)))
+		if bucket != nil {
+			return bucket.Delete([]byte(CreateTenantKey(name)))
+		}
+		return nil
 	})
 }
 
@@ -104,4 +109,21 @@ func TenantGetKey(name string) *TenantData {
 		return nil
 	}
 	return tdb
+}
+
+func TenantList() {
+	tdb := &TenantData{}
+	TenantStore.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket([]byte(TenantKVStoreNS)).Cursor()
+		if c != nil {
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				errunmar := json.Unmarshal(v, tdb)
+				if errunmar != nil {
+					return nil
+				}
+				fmt.Printf("Key:%s Value:%#v\n", k, tdb)
+			}
+		}
+		return nil
+	})
 }
