@@ -17,17 +17,12 @@ limitations under the License.
 package tenant
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 
 	"github.com/diamanticom/multi-tenancy/tenant/clusterapi"
 	tenancyv1alpha1 "github.com/diamanticom/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1"
 	"github.com/diamanticom/multi-tenancy/tenant/tenantdb"
-	"gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/serde"
-	"io/ioutil"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -118,7 +113,11 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 	clusterclient := clusterapi.GetCluster()
 
 	for _, x := range instance.Spec.TenantAdmins {
-		clusterapi.DeleteServiceAccount(clusterclient, x.Name, "kube-system")
+		err := clusterapi.DeleteServiceAccount(clusterclient, x.Name, "kube-system")
+		if err != nil {
+			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
+			log.Info(temp)
+		}
 
 		all := []string{"*"}
 		none := []string{""}
@@ -141,7 +140,11 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 			},
 			Rules: temprules,
 		}
-		clusterapi.DeleteClusterRole(clusterclient, cr)
+		err = clusterapi.DeleteClusterRole(clusterclient, cr)
+		if err != nil {
+			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
+			log.Info(temp)
+		}
 
 		tempsubjects := make([]rbacv1.Subject, 0)
 		temp := rbacv1.Subject{
@@ -166,7 +169,11 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 			},
 			Subjects: tempsubjects,
 		}
-		clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
+		err = clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
+		if err != nil {
+			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
+			log.Info(temp)
+		}
 	}
 	clusterapi.DeleteCluster()
 	//Delete the tenant namespace
@@ -189,8 +196,10 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 	}
 	r.Client.Delete(context.TODO(), tenantAdminNs)
 
-	key := tenantdb.CreateTenantKey(instance.Name)
-	return tenantdb.TenantDeleteKey(key)
+	for _, x := range instance.Spec.TenantAdmins {
+		tenantdb.TenantDeleteKey(instance.Name, x.Name)
+	}
+	return nil
 }
 
 // Helper functions to check and remove string from a slice of strings.
@@ -213,65 +222,6 @@ func removeString(slice []string, s string) (result []string) {
 	return
 }
 
-func AddDeleteTenantAdmin(clusterclient serde.Provider, x string, add bool) error {
-	// Delete the cluster role during tenant delete ??
-	tempsubjects := make([]rbacv1.Subject, 0)
-	temp := rbacv1.Subject{
-		Kind:      "ServiceAccount",
-		Name:      x,
-		Namespace: "kube-system",
-	}
-	tempsubjects = append(tempsubjects, temp)
-	crbinding := &rbacv1.ClusterRoleBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: rbacv1.SchemeGroupVersion.String(),
-			Kind:       "ClusterRoleBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "tenant-admins-clusterrolebinding",
-			Namespace: "kube-system",
-		},
-		RoleRef: rbacv1.RoleRef{
-			Kind:     "ClusterRole",
-			Name:     "cluster-admin",
-			APIGroup: "rbac.authorization.k8s.io",
-		},
-		Subjects: tempsubjects,
-	}
-	if add == false {
-		if err := clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding); err != nil {
-			return err
-		}
-		if err := clusterapi.DeleteServiceAccount(clusterclient, x, "kube-system"); err != nil {
-			return err
-		}
-		return nil
-	} else {
-		if err := clusterapi.CreateClusterRoleBinding(clusterclient, crbinding); err != nil {
-			return err
-		}
-		if err := clusterapi.CreateServiceAccount(clusterclient, x, "kube-system"); err != nil {
-			return err
-		}
-		return nil
-	}
-
-}
-
-func difference(a, b []string) []string {
-	mb := make(map[string]struct{}, len(b))
-	for _, x := range b {
-		mb[x] = struct{}{}
-	}
-	var diff []string
-	for _, x := range a {
-		if _, found := mb[x]; !found {
-			diff = append(diff, x)
-		}
-	}
-	return diff
-}
-
 func getTenantAdminNames(admins []rbacv1.Subject) []string {
 	temp := make([]string, 0)
 	for _, x := range admins {
@@ -289,7 +239,8 @@ func getTenantAdminNames(admins []rbacv1.Subject) []string {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;create;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;create;update;patch
 func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	var targetkubeconfig, masterkubeconfig []string
+	var targetkubeconfig []string
+
 	// Fetch the Tenant instance
 	instance := &tenancyv1alpha1.Tenant{}
 	// Tenant is a cluster scoped CR, we should clear the namespace field in request
@@ -345,261 +296,264 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 
 		return reconcile.Result{}, err
 	}
-	// You cannot change tenancy names in Updates. No way to handle it. It will be treated as a create
-	if err := tenantdb.TenantGetKey(instance.Name); err != nil {
-		var erradd error
-		// Handle Updates Here, only allow tenantAdmin Add/Delete/renames
+	clusterclient := clusterapi.CreateCluster()
 
-		arb := tenantdb.TenantGetKey(instance.Name)
-		tenantadminstrings := getTenantAdminNames(instance.Spec.TenantAdmins)
-
-		// Find tenantadmins removed or added to the new instances, add or delete those admins
-		diffadd := difference(arb.MasterSA, tenantadminstrings)
-		diffsub := difference(tenantadminstrings, arb.MasterSA)
-
-		// Get the Cluster we want tenantAdmin updates on
-		clusterclient := clusterapi.GetCluster()
-		for _, x := range diffsub {
-			erradd = AddDeleteTenantAdmin(clusterclient, x, false)
-		}
-		for _, x := range diffadd {
-			erradd = AddDeleteTenantAdmin(clusterclient, x, true)
-		}
-		return reconcile.Result{}, erradd
-	} else {
-		{
-			clusterclient, kubeconfig := clusterapi.CreateCluster()
-			targetkubeconfig = append(targetkubeconfig, kubeconfig)
-
-			for _, x := range instance.Spec.TenantAdmins {
-				clusterapi.CreateServiceAccount(clusterclient, x.Name, "kube-system")
-
-				all := []string{"*"}
-				none := []string{""}
-				rules := rbacv1.PolicyRule{
-					Verbs:           all,
-					APIGroups:       all,
-					Resources:       all,
-					NonResourceURLs: none,
-				}
-				temprules := make([]rbacv1.PolicyRule, 0)
-				temprules = append(temprules, rules)
-				cr := &rbacv1.ClusterRole{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: rbacv1.SchemeGroupVersion.String(),
-						Kind:       "ClusterRole",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tenant-admins-clusterrole",
-						Namespace: "kube-system",
-					},
-					Rules: temprules,
-				}
-				clusterapi.CreateClusterRole(clusterclient, cr)
-
-				tempsubjects := make([]rbacv1.Subject, 0)
-				temp := rbacv1.Subject{
-					Kind:      "ServiceAccount",
-					Name:      x.Name,
-					Namespace: "kube-system",
-				}
-				tempsubjects = append(tempsubjects, temp)
-				crbinding := &rbacv1.ClusterRoleBinding{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: rbacv1.SchemeGroupVersion.String(),
-						Kind:       "ClusterRoleBinding",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tenant-admins-clusterrolebinding",
-						Namespace: "kube-system",
-					},
-					RoleRef: rbacv1.RoleRef{
-						Kind:     "ClusterRole",
-						Name:     "cluster-admin",
-						APIGroup: "rbac.authorization.k8s.io",
-					},
-					Subjects: tempsubjects,
-				}
-				clusterapi.CreateClusterRoleBinding(clusterclient, crbinding)
-			}
+	// Handle target cluster related tasks
+	for _, x := range instance.Spec.TenantAdmins {
+		clusterapi.CreateServiceAccount(clusterclient, x.Name, "kube-system")
+		if err != nil {
+			return reconcile.Result{}, err
 		}
 
-		// Create tenantAdminNamespace
-		if instance.Spec.TenantAdminNamespaceName != "" {
-			nsList := &corev1.NamespaceList{}
-			err := r.List(context.TODO(), &client.ListOptions{}, nsList)
-			if err != nil {
-				return reconcile.Result{}, err
-			}
-			foundNs := false
-			for _, each := range nsList.Items {
-				if each.Name == instance.Spec.TenantAdminNamespaceName {
-					foundNs = true
-					// Check OwnerReference
-					isOwner := false
-					for _, ownerRef := range each.OwnerReferences {
-						if ownerRef == expectedOwnerRef {
-							isOwner = true
-							break
-						}
+		kubeconfig, err := clusterapi.CreateKubeconfig(x.Name, "kube-system")
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+
+		// For now update only targetkubeconfigs and then update the rest when
+		// masterkubeconfigs are ready
+		temp := make([]string, 0)
+		key := tenantdb.CreateTenantKey(instance.Name, x.Name)
+		tdb := tenantdb.TenantGetKey(instance.Name, x.Name)
+		if tdb == nil {
+			tdb = &tenantdb.TenantData{}
+			tdb.MasterKubeConfig = temp
+			tdb.TargetKubeConfig = kubeconfig
+			tdb.TargetSA = temp
+			tdb.MasterSA = temp
+		} else {
+			tdb.TargetKubeConfig = kubeconfig
+
+		}
+		if err := tenantdb.TenantStoreKey(key, tdb); err != nil {
+			panic(err)
+		}
+
+		all := []string{"*"}
+		none := []string{""}
+		rules := rbacv1.PolicyRule{
+			Verbs:           all,
+			APIGroups:       all,
+			Resources:       all,
+			NonResourceURLs: none,
+		}
+		temprules := make([]rbacv1.PolicyRule, 0)
+		temprules = append(temprules, rules)
+		cr := &rbacv1.ClusterRole{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "ClusterRole",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "tenant-admins-clusterrole",
+				Namespace: "kube-system",
+			},
+			Rules: temprules,
+		}
+		err = clusterapi.CreateClusterRole(clusterclient, cr)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+
+		tempsubjects := make([]rbacv1.Subject, 0)
+		tempsub := rbacv1.Subject{
+			Kind:      "ServiceAccount",
+			Name:      x.Name,
+			Namespace: "kube-system",
+		}
+		tempsubjects = append(tempsubjects, tempsub)
+		crbinding := &rbacv1.ClusterRoleBinding{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "ClusterRoleBinding",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "tenant-admins-clusterrolebinding",
+				Namespace: "kube-system",
+			},
+			RoleRef: rbacv1.RoleRef{
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+				APIGroup: "rbac.authorization.k8s.io",
+			},
+			Subjects: tempsubjects,
+		}
+		err = clusterapi.CreateClusterRoleBinding(clusterclient, crbinding)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+	}
+
+	// Create tenantAdminNamespace
+	if instance.Spec.TenantAdminNamespaceName != "" {
+		nsList := &corev1.NamespaceList{}
+		err := r.List(context.TODO(), &client.ListOptions{}, nsList)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		foundNs := false
+		for _, each := range nsList.Items {
+			if each.Name == instance.Spec.TenantAdminNamespaceName {
+				foundNs = true
+				// Check OwnerReference
+				isOwner := false
+				for _, ownerRef := range each.OwnerReferences {
+					if ownerRef == expectedOwnerRef {
+						isOwner = true
+						break
 					}
-					if !isOwner {
-						err = fmt.Errorf("TenantAdminNamespace %v is owned by %v", each.Name, each.OwnerReferences)
-						return reconcile.Result{}, err
-					}
-					break
 				}
-			}
-			if !foundNs {
-				tenantAdminNs := &corev1.Namespace{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: corev1.SchemeGroupVersion.String(),
-						Kind:       "Namespace",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Name:            instance.Spec.TenantAdminNamespaceName,
-						OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
-					},
-				}
-				if err := r.Client.Create(context.TODO(), tenantAdminNs); err != nil {
+				if !isOwner {
+					err = fmt.Errorf("TenantAdminNamespace %v is owned by %v", each.Name, each.OwnerReferences)
 					return reconcile.Result{}, err
 				}
+				break
 			}
 		}
-		// Create RBACs for tenantAdmins, allow them to access tenant CR and tenantAdminNamespace.
-		if instance.Spec.TenantAdmins != nil {
-			// First, create cluster roles to allow them to access tenant CR and tenantAdminNamespace.
-			crName := fmt.Sprintf("%s-tenant-admin-role", instance.Name)
-			cr := &rbacv1.ClusterRole{
+		if !foundNs {
+			tenantAdminNs := &corev1.Namespace{
 				TypeMeta: metav1.TypeMeta{
-					APIVersion: rbacv1.SchemeGroupVersion.String(),
-					Kind:       "ClusterRole",
+					APIVersion: corev1.SchemeGroupVersion.String(),
+					Kind:       "Namespace",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:            crName,
+					Name:            instance.Spec.TenantAdminNamespaceName,
 					OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
 				},
-				Rules: []rbacv1.PolicyRule{
-					{
-						Verbs:         []string{"get", "list", "watch", "update", "patch", "delete"},
-						APIGroups:     []string{tenancyv1alpha1.SchemeGroupVersion.Group},
-						Resources:     []string{"tenants"},
-						ResourceNames: []string{instance.Name},
-					},
-					{
-						Verbs:         []string{"get", "list", "watch"},
-						APIGroups:     []string{""},
-						Resources:     []string{"namespaces"},
-						ResourceNames: []string{instance.Spec.TenantAdminNamespaceName},
-					},
-				},
 			}
-			if err := r.clientApply(cr); err != nil {
-				return reconcile.Result{}, err
-			}
-			crbindingName := fmt.Sprintf("%s-tenant-admins-rolebinding", instance.Name)
-			crbinding := &rbacv1.ClusterRoleBinding{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: rbacv1.SchemeGroupVersion.String(),
-					Kind:       "ClusterRoleBinding",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:            crbindingName,
-					OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
-				},
-				Subjects: instance.Spec.TenantAdmins,
-				RoleRef: rbacv1.RoleRef{
-					APIGroup: rbacv1.GroupName,
-					Kind:     "ClusterRole",
-					Name:     crName,
-				},
-			}
-			if err := r.clientApply(crbinding); err != nil {
-				return reconcile.Result{}, err
-			}
-			// Second, create namespace role to allow them to create tenantnamespace CR in tenantAdminNamespace.
-			role := &rbacv1.Role{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: rbacv1.SchemeGroupVersion.String(),
-					Kind:       "Role",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:            "tenant-admin-role",
-					Namespace:       instance.Spec.TenantAdminNamespaceName,
-					OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
-				},
-				Rules: []rbacv1.PolicyRule{
-					{
-						Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-						APIGroups: []string{tenancyv1alpha1.SchemeGroupVersion.Group},
-						Resources: []string{"tenantnamespaces"},
-					},
-				},
-			}
-			if err := r.clientApply(role); err != nil {
-				return reconcile.Result{}, err
-			}
-			rbinding := &rbacv1.RoleBinding{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: rbacv1.SchemeGroupVersion.String(),
-					Kind:       "RoleBinding",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:            "tenant-admins-rolebinding",
-					Namespace:       instance.Spec.TenantAdminNamespaceName,
-					OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
-				},
-				Subjects: instance.Spec.TenantAdmins,
-				RoleRef: rbacv1.RoleRef{
-					APIGroup: rbacv1.GroupName,
-					Kind:     "Role",
-					Name:     "tenant-admin-role",
-				},
-			}
-			if err := r.clientApply(rbinding); err != nil {
+			if err := r.Client.Create(context.TODO(), tenantAdminNs); err != nil {
 				return reconcile.Result{}, err
 			}
 		}
-		for _, x := range instance.Spec.TenantAdmins {
-			mk, err := CreateSA(x.Name, instance.Spec.TenantAdminNamespaceName)
-			if err != nil {
-				return reconcile.Result{}, err
-			}
-			masterkubeconfig = append(masterkubeconfig, mk)
+	}
+	// Create RBACs for tenantAdmins, allow them to access tenant CR and tenantAdminNamespace.
+	if instance.Spec.TenantAdmins != nil {
+		// First, create cluster roles to allow them to access tenant CR and tenantAdminNamespace.
+		crName := fmt.Sprintf("%s-tenant-admin-role", instance.Name)
+		cr := &rbacv1.ClusterRole{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "ClusterRole",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            crName,
+				OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					Verbs:         []string{"get", "list", "watch", "update", "patch", "delete"},
+					APIGroups:     []string{tenancyv1alpha1.SchemeGroupVersion.Group},
+					Resources:     []string{"tenants"},
+					ResourceNames: []string{instance.Name},
+				},
+				{
+					Verbs:         []string{"get", "list", "watch"},
+					APIGroups:     []string{""},
+					Resources:     []string{"namespaces"},
+					ResourceNames: []string{instance.Spec.TenantAdminNamespaceName},
+				},
+			},
 		}
+		if err := r.clientApply(cr); err != nil {
+			return reconcile.Result{}, err
+		}
+		crbindingName := fmt.Sprintf("%s-tenant-admins-rolebinding", instance.Name)
+		crbinding := &rbacv1.ClusterRoleBinding{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "ClusterRoleBinding",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            crbindingName,
+				OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
+			},
+			Subjects: instance.Spec.TenantAdmins,
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     crName,
+			},
+		}
+		if err := r.clientApply(crbinding); err != nil {
+			return reconcile.Result{}, err
+		}
+		// Second, create namespace role to allow them to create tenantnamespace CR in tenantAdminNamespace.
+		role := &rbacv1.Role{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "Role",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "tenant-admin-role",
+				Namespace:       instance.Spec.TenantAdminNamespaceName,
+				OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+					APIGroups: []string{tenancyv1alpha1.SchemeGroupVersion.Group},
+					Resources: []string{"tenantnamespaces"},
+				},
+			},
+		}
+		if err := r.clientApply(role); err != nil {
+			return reconcile.Result{}, err
+		}
+		rbinding := &rbacv1.RoleBinding{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "RoleBinding",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "tenant-admins-rolebinding",
+				Namespace:       instance.Spec.TenantAdminNamespaceName,
+				OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
+			},
+			Subjects: instance.Spec.TenantAdmins,
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     "tenant-admin-role",
+			},
+		}
+		if err := r.clientApply(rbinding); err != nil {
+			return reconcile.Result{}, err
+		}
+	}
+	for _, x := range instance.Spec.TenantAdmins {
+		obj := &corev1.ServiceAccount{}
+		obj.Name = x.Name
+		obj.Kind = "ServiceAccount"
+		obj.APIVersion = "v1"
+		obj.Namespace = instance.Spec.TenantAdminNamespaceName
+
+		if err := r.clientApply(obj); err != nil {
+			return reconcile.Result{}, err
+		}
+
+		masterkubeconfig, err := clusterapi.CreateKubeconfig(x.Name, instance.Spec.TenantAdminNamespaceName)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+
 		temp := make([]string, 0)
-		tdb := tenantdb.TenantData{MasterKubeConfig: masterkubeconfig,
-			TargetKubeConfig: targetkubeconfig,
-			TargetSA:         temp,
-			MasterSA:         temp,
+		temp = append(temp, x.Name)
+
+		key := tenantdb.CreateTenantKey(instance.Name, x.Name)
+		tdb := tenantdb.TenantGetKey(instance.Name, x.Name)
+		if tdb == nil {
+			tdb = &tenantdb.TenantData{}
 		}
-		key := tenantdb.CreateTenantKey(instance.Name)
-		if err := tenantdb.TenantStoreKey(key, &tdb); err != nil {
+		tdb.MasterKubeConfig = masterkubeconfig
+		tdb.TargetKubeConfig = targetkubeconfig
+		tdb.TargetSA = temp
+		tdb.MasterSA = temp
+
+		if err := tenantdb.TenantStoreKey(key, tdb); err != nil {
 			panic(err)
 		}
 	}
+
 	return reconcile.Result{}, nil
-
-}
-
-func CreateSA(SA string, NS string) (string, error) {
-	var out bytes.Buffer
-	dir, err := ioutil.TempDir("/tmp", "kubeconfig")
-	if err != nil {
-		panic(err)
-	}
-	defer os.Remove(dir)
-	fmt.Println(dir)
-
-	file, err := ioutil.TempFile(dir, "kubeconfig")
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(file.Name())
-
-	cmd := exec.Command("./kubernetes_add_service_account_kubeconfig.sh", SA, NS, file.Name())
-	cmd.Stdout = &out
-	execErr := cmd.Run()
-	return out.String(), execErr
 
 }

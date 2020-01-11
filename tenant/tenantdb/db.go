@@ -14,9 +14,9 @@ var log = logf.Log.WithName("db")
 
 type TenantData struct {
 	MasterKubeConfig []string `json:"masterKubeConfig"`
-	TargetKubeConfig []string `json:"targetKubeConfig"`
 	MasterSA         []string `json:"masterSA"`
 	TargetSA         []string `json:"targetSA"`
+	TargetKubeConfig []string `json:"targetKubeConfig"`
 }
 
 const TenantKVStoreNS = "TenantDB"
@@ -29,16 +29,17 @@ func homeLink(w http.ResponseWriter, r *http.Request) {
 
 func initapi() {
 	router := mux.NewRouter().StrictSlash(true)
-	router.HandleFunc("/tenants/{name}", getOne).Methods("GET")
-	http.ListenAndServe(":8090", router)
+	router.HandleFunc("/tenants/{name}/user/{user}", gettenant).Methods("GET")
+	go http.ListenAndServe(":8090", router)
 }
 
-func getOne(w http.ResponseWriter, r *http.Request) {
+func gettenant(w http.ResponseWriter, r *http.Request) {
 	// Get the ID from the url
-	temp := mux.Vars(r)["name"]
-	dummystr := fmt.Sprintf("Querying Tenant db for %s", temp)
+	name := mux.Vars(r)["name"]
+	user := mux.Vars(r)["user"]
+	dummystr := fmt.Sprintf("Querying Tenant db for %s for user %s", name, user)
 	log.Info(dummystr)
-	tdb := TenantGetKey(temp)
+	tdb := TenantGetKey(name, user)
 	json.NewEncoder(w).Encode(tdb)
 }
 
@@ -53,15 +54,15 @@ func ConnecttoBolt() {
 	go initapi()
 }
 
-func CreateTenantKey(name string) string {
-	return name
+func CreateTenantKey(name string, username string) string {
+	return name + "#" + username
 }
 
-func TenantDeleteKey(name string) error {
+func TenantDeleteKey(name string, username string) error {
 	return TenantStore.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(TenantKVStoreNS))
 		if bucket != nil {
-			return bucket.Delete([]byte(CreateTenantKey(name)))
+			return bucket.Delete([]byte(CreateTenantKey(name, username)))
 		}
 		return nil
 	})
@@ -89,11 +90,11 @@ func TenantStoreKey(name string, val *TenantData) error {
 	return nil
 }
 
-func TenantGetKey(name string) *TenantData {
+func TenantGetKey(name string, user string) *TenantData {
 	var resp []byte
 	tdb := &TenantData{}
 
-	key := CreateTenantKey(name)
+	key := CreateTenantKey(name, user)
 	// retrieve the data
 	_ = TenantStore.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(TenantKVStoreNS))
