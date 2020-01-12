@@ -4,7 +4,7 @@ metadata:
   labels:
     control-plane: controller-manager
     controller-tools.k8s.io: "1.0"
-  name: tenant-system
+  name: tenant-tenant-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -21,6 +21,17 @@ rules:
   - list
   - watch
   - create
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
@@ -59,26 +70,6 @@ rules:
   - get
   - list
   - create
-  - update
-  - patch
-- apiGroups:
-  - tenancy.x-k8s.io
-  resources:
-  - tenants
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
-- apiGroups:
-  - tenancy.x-k8s.io
-  resources:
-  - tenants/status
-  verbs:
-  - get
   - update
   - patch
 - apiGroups:
@@ -213,7 +204,7 @@ spec:
               fieldPath: metadata.namespace
         - name: SECRET_NAME
           value: webhook-server-secret
-        image: docker.io/diamanti/tenant:latest
+        image: multitenancy/tenant:latest
         imagePullPolicy: Always
         name: manager
         ports:
@@ -221,7 +212,7 @@ spec:
           name: webhook-server
           protocol: TCP
         - containerPort: 8090
-          name: tenant-service
+          name: tenant-server
           protocol: TCP
         resources:
           limits:
