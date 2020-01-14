@@ -233,7 +233,7 @@ func getTenantAdminNames(admins []rbacv1.Subject) []string {
 // Reconcile reads that state of the cluster for a Tenant object and makes changes based on the state read
 // and what is in the Tenant.Spec
 // Automatically generate RBAC rules to allow the Controller to read and write related resources
-// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;create;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;create;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;create;update;patch

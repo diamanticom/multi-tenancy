@@ -29,6 +29,7 @@ func homeLink(w http.ResponseWriter, r *http.Request) {
 
 func initapi() {
 	router := mux.NewRouter().StrictSlash(true)
+	router.HandleFunc("/", homeLink).Methods("GET")
 	router.HandleFunc("/tenants/{name}/user/{user}", gettenant).Methods("GET")
 	go http.ListenAndServe(":8090", router)
 }

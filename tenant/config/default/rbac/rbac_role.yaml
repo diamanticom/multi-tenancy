@@ -15,16 +15,6 @@ rules:
   - create
   - delete
 - apiGroups:
-  - ""
-  resources:
-  - serviceaccounts
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - delete
-- apiGroups:
   - rbac.authorization.k8s.io
   resources:
   - clusterroles
