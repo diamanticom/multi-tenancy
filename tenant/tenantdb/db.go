@@ -12,6 +12,11 @@ import (
 
 var log = logf.Log.WithName("db")
 
+type TenantPost struct {
+	tenantname string `json:"tenantname"`
+	username   string `json:"username"`
+}
+
 type TenantData struct {
 	MasterKubeConfig []string `json:"masterKubeConfig"`
 	MasterSA         []string `json:"masterSA"`
@@ -30,14 +35,18 @@ func homeLink(w http.ResponseWriter, r *http.Request) {
 func initapi() {
 	router := mux.NewRouter().StrictSlash(true)
 	router.HandleFunc("/", homeLink).Methods("GET")
-	router.HandleFunc("/tenants/{name}/user/{user}", gettenant).Methods("GET")
+	router.HandleFunc("/tenants", gettenant).Methods("POST")
 	go http.ListenAndServe(":8090", router)
 }
 
 func gettenant(w http.ResponseWriter, r *http.Request) {
 	// Get the ID from the url
-	name := mux.Vars(r)["name"]
-	user := mux.Vars(r)["user"]
+	w.Header().Set("Content-Type", "application/json")
+	var post TenantPost
+	_ = json.NewDecoder(r.Body).Decode(&post)
+
+	name := post.tenantname
+	user := post.username
 	dummystr := fmt.Sprintf("Querying Tenant db for %s for user %s", name, user)
 	log.Info(dummystr)
 	tdb := TenantGetKey(name, user)

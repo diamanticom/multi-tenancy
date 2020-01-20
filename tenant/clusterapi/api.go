@@ -162,3 +162,24 @@ func CreateClusterRole(k serde.Provider, cr *rbacv1.ClusterRole) error {
 	}
 	return err
 }
+
+func DeleteSecrets(k serde.Provider, cr *rbacv1.ClusterRole) error {
+	client, err := k.GetClient()
+	if err != nil {
+		panic(err)
+	}
+	return client.Delete(context.Background(), cr)
+}
+
+func CreateSecrets(k serde.Provider, cr *rbacv1.ClusterRole) error {
+	client, err := k.GetClient()
+	if err != nil {
+		panic(err)
+	}
+	if err := client.Create(context.Background(), cr); err != nil {
+		if errors.IsAlreadyExists(err) {
+			err = client.Update(context.Background(), cr)
+		}
+	}
+	return err
+}
