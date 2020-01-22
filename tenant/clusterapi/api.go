@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/tools/clientcmd"
 	"os"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var targetclient serde.Provider
@@ -163,23 +164,72 @@ func CreateClusterRole(k serde.Provider, cr *rbacv1.ClusterRole) error {
 	return err
 }
 
-func DeleteSecrets(k serde.Provider, cr *rbacv1.ClusterRole) error {
+func DeleteSecret(k serde.Provider, name string, ns string) error {
 	client, err := k.GetClient()
 	if err != nil {
 		panic(err)
 	}
-	return client.Delete(context.Background(), cr)
+	objs := &corev1.Secret{}
+	objs.Name = name
+	objs.Kind = "Secret"
+	objs.Namespace = ns
+	objs.APIVersion = "v1"
+	objs.Type = corev1.SecretTypeServiceAccountToken
+
+	return client.Delete(context.Background(), objs)
 }
 
-func CreateSecrets(k serde.Provider, cr *rbacv1.ClusterRole) error {
+func CreateSecret(k serde.Provider, name string, ns string) error {
 	client, err := k.GetClient()
 	if err != nil {
 		panic(err)
 	}
-	if err := client.Create(context.Background(), cr); err != nil {
+
+	objs := &corev1.Secret{}
+	objs.Name = name
+	objs.Namespace = ns
+	objs.Kind = "Secret"
+	objs.APIVersion = "v1"
+	objs.Type = corev1.SecretTypeServiceAccountToken
+
+	if err = client.Create(context.Background(), objs); err != nil {
 		if errors.IsAlreadyExists(err) {
-			err = client.Update(context.Background(), cr)
+			err = client.Update(context.Background(), objs)
 		}
 	}
 	return err
+}
+
+func GetAuthorizationToken(k serde.Provider, ns string, serviceAccountName string) (string, error) {
+	c, err := k.GetClient()
+	if err != nil {
+		panic(err)
+	}
+	list := &corev1.SecretList{}
+	opt := client.InNamespace(ns)
+
+	if err := c.List(context.Background(),
+		opt, list); err != nil {
+		return "", err
+	}
+	for _, item := range list.Items {
+		if item.Annotations == nil || item.Data == nil {
+			continue
+		}
+
+		sa, ok := item.Annotations["kubernetes.io/service-account.name"]
+		if !ok || sa != serviceAccountName {
+			continue
+		}
+
+		token, ok := item.Data["token"]
+		if !ok {
+			continue
+		}
+
+		if len(token) > 0 {
+			return string(token), nil
+		}
+	}
+	return "", fmt.Errorf("valid token could not be found")
 }

@@ -47,6 +47,7 @@ const VaultKvPath = "kv"
 // Keep per tenancy vault keys in this map.
 //For now not using it, going forward make use of it
 var secertsmap map[string]string
+var sp_ns string = "default"
 
 /**
 * USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
@@ -112,7 +113,7 @@ func (r *ReconcileTenant) GetAuthorizationTokenfromSecret(ns string, tenancyname
 
 	obj := &corev1.Secret{}
 
-	err := r.Client.Get(context.TODO(), types.NamespacedName{Name: tenancyname, Namespace: "default"}, obj)
+	err := r.Client.Get(context.TODO(), types.NamespacedName{Name: tenancyname, Namespace: ns}, obj)
 	if err != nil {
 		return "", err
 	}
@@ -178,6 +179,11 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 		if err != nil {
 			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
 			log.Info(temp)
+			return err
+		}
+		err = clusterapi.DeleteSecret(clusterclient, x.Name, "kube-system")
+		if err != nil {
+			return err
 		}
 
 		all := []string{"*"}
@@ -205,6 +211,7 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 		if err != nil {
 			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
 			log.Info(temp)
+			return err
 		}
 
 		tempsubjects := make([]rbacv1.Subject, 0)
@@ -234,8 +241,14 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 		if err != nil {
 			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
 			log.Info(temp)
+			return err
 		}
 	}
+	err := r.DeleteTenantSAandSecret(sp_ns, instance.Name)
+	if err != nil {
+		return err
+	}
+
 	clusterapi.DeleteCluster()
 	//Delete the tenant namespace
 	expectedOwnerRef := metav1.OwnerReference{
@@ -256,6 +269,7 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 		},
 	}
 	r.Client.Delete(context.TODO(), tenantAdminNs)
+	r.DeleteTenancy(instance.Name, instance.Spec.TenantAdminNamespaceName)
 
 	/*
 		for _, x := range instance.Spec.TenantAdmins {
@@ -292,14 +306,14 @@ func getTenantAdminNames(admins []rbacv1.Subject) []string {
 	return temp
 }
 
-func (r *ReconcileTenant) CreateTenantSAandSecret(ns string, tenancyname string) error {
+func (r *ReconcileTenant) DeleteTenantSAandSecret(ns string, tenancyname string) error {
 	obj := &corev1.ServiceAccount{}
 	obj.Name = tenancyname
 	obj.Kind = "ServiceAccount"
 	obj.APIVersion = "v1"
 	obj.Namespace = ns
 
-	if err := r.Client.Create(context.Background(), obj); err != nil {
+	if err := r.Client.Delete(context.Background(), obj); err != nil {
 		return err
 	}
 
@@ -308,9 +322,43 @@ func (r *ReconcileTenant) CreateTenantSAandSecret(ns string, tenancyname string)
 	objs.Kind = "Secret"
 	objs.APIVersion = "v1"
 	objs.Type = corev1.SecretTypeServiceAccountToken
+	objs.Namespace = ns
+	objs.Annotations = make(map[string]string, 0)
+	objs.Annotations["kubernetes.io/service-account.name"] = tenancyname
+
+	if err := r.Client.Delete(context.Background(), objs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *ReconcileTenant) CreateTenantSAandSecret(ns string, tenancyname string) error {
+	obj := &corev1.ServiceAccount{}
+	obj.Name = tenancyname
+	obj.Kind = "ServiceAccount"
+	obj.APIVersion = "v1"
+	obj.Namespace = ns
+
+	err := r.Client.Create(context.Background(), obj)
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return err
+	}
+
+	objs := &corev1.Secret{}
+	objs.Name = tenancyname
+	objs.Kind = "Secret"
+	objs.APIVersion = "v1"
+	objs.Type = corev1.SecretTypeServiceAccountToken
+	objs.Namespace = ns
+	objs.Annotations = make(map[string]string, 0)
+	objs.Annotations["kubernetes.io/service-account.name"] = tenancyname
 
 	if err := r.Client.Create(context.Background(), objs); err != nil {
-		return err
+		if errors.IsAlreadyExists(err) {
+			return nil
+		} else {
+			return err
+		}
 	}
 	return nil
 }
@@ -318,16 +366,14 @@ func (r *ReconcileTenant) CreateTenantSAandSecret(ns string, tenancyname string)
 //To talk to vault generate a per tenancy secret token with Service account. Use this
 // as interface with vault
 func (r *ReconcileTenant) GenerateVaultToken(ns string, tenancyname string) (string, error) {
-	obj := &corev1.Secret{}
-	err := r.Client.Get(context.TODO(), types.NamespacedName{Name: tenancyname, Namespace: "default"}, obj)
-	if errors.IsNotFound(err) {
-		err := r.CreateTenantSAandSecret(ns, tenancyname)
-		if err != nil {
-			return "", err
-		}
-	}
-	token, err := r.GetAuthorizationTokenfromSecret(ns, tenancyname)
+	err := r.CreateTenantSAandSecret(sp_ns, tenancyname)
 	if err != nil {
+		log.Info("Not able to create SA and secret for vault ")
+		return "", err
+	}
+	token, err := r.GetAuthorizationTokenfromSecret(sp_ns, tenancyname)
+	if err != nil {
+		log.Info("Not able to token from tenant secret for vault ")
 		return "", err
 	}
 	return token, nil
@@ -481,6 +527,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		return reconcile.Result{}, err
 	}
 
+	log.Info("Successfully added finalizer for tenant object ")
 	// Create tenantAdminNamespace
 	if instance.Spec.TenantAdminNamespaceName != "" {
 		nsList := &corev1.NamespaceList{}
@@ -618,6 +665,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		}
 	}
 
+	log.Info("Successfully added RBAC and SA on master cluster")
 	clusterclient := clusterapi.CreateCluster()
 	// Handle target cluster related tasks
 	for _, x := range instance.Spec.TenantAdmins {
@@ -627,14 +675,13 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-
-		token, errtok := r.GetAuthorizationToken(instance.Spec.TenantAdminNamespaceName, x.Name)
-		if errtok != nil {
+		clusterapi.CreateSecret(clusterclient, x.Name, "kube-system")
+		if err != nil {
 			return reconcile.Result{}, err
 		}
 
-		_, err := clusterapi.CreateKubeconfig(x.Name, "kube-system")
-		if err != nil {
+		token, errtok := clusterapi.GetAuthorizationToken(clusterclient, "kube-system", x.Name)
+		if errtok != nil {
 			return reconcile.Result{}, err
 		}
 
@@ -697,6 +744,8 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		}
 	}
 
+	log.Info("Created Tenancy in target clusters")
+
 	err = r.CreateTenancy(instance.Spec.TenantAdminNamespaceName, instance.Name)
 	if err != nil {
 		log.Info("Unable to Create tenancy in Vault")
@@ -729,6 +778,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			return reconcile.Result{}, err
 		}
 	}
+	log.Info("Created Tenancy in CR and Vault")
 
 	return reconcile.Result{}, nil
 

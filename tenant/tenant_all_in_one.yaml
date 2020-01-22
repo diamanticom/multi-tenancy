@@ -160,6 +160,19 @@ rules:
   - update
   - patch
   - delete
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -226,6 +239,8 @@ spec:
               fieldPath: metadata.namespace
         - name: SECRET_NAME
           value: webhook-server-secret
+        - name: SP_NAMESPACE
+          value: default
         image: docker.io/diamanti/tenant:latest
         imagePullPolicy: Always
         name: manager
