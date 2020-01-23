@@ -13,7 +13,6 @@ YELLOW="\e[01;33m"
 BLUE="\e[01;34m"
 COLOROFF="\e[00m"
 
-read a
 # Add user to k8s using service account
 if [[ -z "$1" ]] || [[ -z "$2" ]] || [[ -z "$3" ]] || [[ -z "$4" ]]; then
  echo "usage: $0 <service_account_name> <namespace> <filename> <target_folder>"
@@ -101,7 +100,7 @@ apply_rbac() {
     kubectl apply -f permissions_${SERVICE_ACCOUNT_NAME}.yaml
     printf "done"
 }
-create_service_account
+#create_service_account
 get_secret_name_from_service_account
 extract_ca_crt_from_secret
 get_user_token_from_secret

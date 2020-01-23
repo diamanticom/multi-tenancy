@@ -22,3 +22,5 @@ bin
 *.swp
 *.swo
 *~
+#Ignore vendor directory
+vendor/*
