@@ -182,10 +182,6 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 			log.Info(temp)
 			return err
 		}
-		err = clusterapi.DeleteSecret(clusterclient, x.Name, "kube-system")
-		if err != nil {
-			return err
-		}
 
 		all := []string{"*"}
 		none := []string{""}
@@ -628,6 +624,17 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		if err := r.clientApply(crbinding); err != nil {
 			return reconcile.Result{}, err
 		}
+		tenantnamespacepoilcy := rbacv1.PolicyRule{
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			APIGroups: []string{tenancyv1alpha1.SchemeGroupVersion.Group},
+			Resources: []string{"tenantnamespaces"},
+		}
+		// Pods being added to TA Ns to debug RBAC rules
+		podspolicy := rbacv1.PolicyRule{
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+		}
 		// Second, create namespace role to allow them to create tenantnamespace CR in tenantAdminNamespace.
 		role := &rbacv1.Role{
 			TypeMeta: metav1.TypeMeta{
@@ -639,13 +646,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 				Namespace:       instance.Spec.TenantAdminNamespaceName,
 				OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
 			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-					APIGroups: []string{tenancyv1alpha1.SchemeGroupVersion.Group},
-					Resources: []string{"tenantnamespaces"},
-				},
-			},
+			Rules: []rbacv1.PolicyRule{tenantnamespacepoilcy, podspolicy},
 		}
 		if err := r.clientApply(role); err != nil {
 			return reconcile.Result{}, err
