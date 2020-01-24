@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+	"time"
 )
 
 var log = logf.Log.WithName("controller")
@@ -371,6 +372,9 @@ func (r *ReconcileTenant) GenerateVaultToken(ns string, tenancyname string) (str
 		log.Info("Not able to create SA and secret for vault ")
 		return "", err
 	}
+
+	time.Sleep(1 * time.Second)
+
 	token, err := r.GetAuthorizationTokenfromSecret(sp_ns, tenancyname)
 	if err != nil {
 		log.Info("Not able to token from tenant secret for vault ")
@@ -416,7 +420,10 @@ func (r *ReconcileTenant) UpdateTargetToken(token string, ns string, tenancyname
 	if err != nil {
 		return err
 	}
-	key := tenancyname + username
+
+	// The parameter to used here is clustername + username. This is the key to update target tokens. Remember
+	// we don't need tenancy since the Kv is per tenancy
+	key := "azure" + username
 	if err := vault.KvDataSet(VaultKvPath, key, &secret.KvEntry{
 		Data: map[string][]byte{
 			"targettoken": []byte(token),
