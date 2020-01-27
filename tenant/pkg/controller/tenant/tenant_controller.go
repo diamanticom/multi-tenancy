@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+	"time"
 )
 
 var log = logf.Log.WithName("controller")
@@ -179,10 +180,6 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 		if err != nil {
 			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
 			log.Info(temp)
-			return err
-		}
-		err = clusterapi.DeleteSecret(clusterclient, x.Name, "kube-system")
-		if err != nil {
 			return err
 		}
 
@@ -371,6 +368,9 @@ func (r *ReconcileTenant) GenerateVaultToken(ns string, tenancyname string) (str
 		log.Info("Not able to create SA and secret for vault ")
 		return "", err
 	}
+
+	time.Sleep(1 * time.Second)
+
 	token, err := r.GetAuthorizationTokenfromSecret(sp_ns, tenancyname)
 	if err != nil {
 		log.Info("Not able to token from tenant secret for vault ")
@@ -416,7 +416,10 @@ func (r *ReconcileTenant) UpdateTargetToken(token string, ns string, tenancyname
 	if err != nil {
 		return err
 	}
-	key := tenancyname + username
+
+	// The parameter to used here is clustername + username. This is the key to update target tokens. Remember
+	// we don't need tenancy since the Kv is per tenancy
+	key := "azure" + username
 	if err := vault.KvDataSet(VaultKvPath, key, &secret.KvEntry{
 		Data: map[string][]byte{
 			"targettoken": []byte(token),
@@ -621,6 +624,17 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		if err := r.clientApply(crbinding); err != nil {
 			return reconcile.Result{}, err
 		}
+		tenantnamespacepoilcy := rbacv1.PolicyRule{
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			APIGroups: []string{tenancyv1alpha1.SchemeGroupVersion.Group},
+			Resources: []string{"tenantnamespaces"},
+		}
+		// Pods being added to TA Ns to debug RBAC rules
+		podspolicy := rbacv1.PolicyRule{
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+		}
 		// Second, create namespace role to allow them to create tenantnamespace CR in tenantAdminNamespace.
 		role := &rbacv1.Role{
 			TypeMeta: metav1.TypeMeta{
@@ -632,13 +646,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 				Namespace:       instance.Spec.TenantAdminNamespaceName,
 				OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
 			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-					APIGroups: []string{tenancyv1alpha1.SchemeGroupVersion.Group},
-					Resources: []string{"tenantnamespaces"},
-				},
-			},
+			Rules: []rbacv1.PolicyRule{tenantnamespacepoilcy, podspolicy},
 		}
 		if err := r.clientApply(role); err != nil {
 			return reconcile.Result{}, err
