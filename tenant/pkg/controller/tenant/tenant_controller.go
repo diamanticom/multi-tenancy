@@ -176,13 +176,44 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 	clusterclient := clusterapi.GetCluster()
 
 	for _, x := range instance.Spec.TenantAdmins {
-		err := clusterapi.DeleteServiceAccount(clusterclient, x.Name, "kube-system")
+		tempsubjects := make([]rbacv1.Subject, 0)
+		temp := rbacv1.Subject{
+			Kind:      "ServiceAccount",
+			Name:      x.Name,
+			Namespace: "default",
+		}
+		tempsubjects = append(tempsubjects, temp)
+		crbinding := &rbacv1.ClusterRoleBinding{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: rbacv1.SchemeGroupVersion.String(),
+				Kind:       "ClusterRoleBinding",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "tenant-admins-clusterrolebinding",
+				Namespace: "default",
+			},
+			RoleRef: rbacv1.RoleRef{
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+				APIGroup: "rbac.authorization.k8s.io",
+			},
+			Subjects: tempsubjects,
+		}
+		err := clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
+		if err != nil {
+			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
+			log.Info(temp)
+			return err
+		}
+		err = clusterapi.DeleteServiceAccount(clusterclient, x.Name, "default")
 		if err != nil {
 			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
 			log.Info(temp)
 			return err
 		}
 
+	}
+	/*
 		all := []string{"*"}
 		none := []string{""}
 		rules := rbacv1.PolicyRule{
@@ -200,47 +231,18 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tenant-admins-clusterrole",
-				Namespace: "kube-system",
+				Namespace: "default",
 			},
 			Rules: temprules,
 		}
-		err = clusterapi.DeleteClusterRole(clusterclient, cr)
+		err := clusterapi.DeleteClusterRole(clusterclient, cr)
 		if err != nil {
-			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
+			temp := fmt.Sprintf("Unable to delete cluster roles  %s for  tenant %s", x.Name, instance.Name)
 			log.Info(temp)
 			return err
 		}
+	*/
 
-		tempsubjects := make([]rbacv1.Subject, 0)
-		temp := rbacv1.Subject{
-			Kind:      "ServiceAccount",
-			Name:      x.Name,
-			Namespace: "kube-system",
-		}
-		tempsubjects = append(tempsubjects, temp)
-		crbinding := &rbacv1.ClusterRoleBinding{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: rbacv1.SchemeGroupVersion.String(),
-				Kind:       "ClusterRoleBinding",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "tenant-admins-clusterrolebinding",
-				Namespace: "kube-system",
-			},
-			RoleRef: rbacv1.RoleRef{
-				Kind:     "ClusterRole",
-				Name:     "cluster-admin",
-				APIGroup: "rbac.authorization.k8s.io",
-			},
-			Subjects: tempsubjects,
-		}
-		err = clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
-		if err != nil {
-			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
-			log.Info(temp)
-			return err
-		}
-	}
 	err := r.DeleteTenantSAandSecret(sp_ns, instance.Name)
 	if err != nil {
 		return err
@@ -314,18 +316,6 @@ func (r *ReconcileTenant) DeleteTenantSAandSecret(ns string, tenancyname string)
 		return err
 	}
 
-	objs := &corev1.Secret{}
-	objs.Name = tenancyname
-	objs.Kind = "Secret"
-	objs.APIVersion = "v1"
-	objs.Type = corev1.SecretTypeServiceAccountToken
-	objs.Namespace = ns
-	objs.Annotations = make(map[string]string, 0)
-	objs.Annotations["kubernetes.io/service-account.name"] = tenancyname
-
-	if err := r.Client.Delete(context.Background(), objs); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -679,16 +669,16 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 	for _, x := range instance.Spec.TenantAdmins {
 		// There should be a loop here for all clusters in the tenancy
 		// XXX: TODO make it a part of the clutser API integration
-		clusterapi.CreateServiceAccount(clusterclient, x.Name, "kube-system")
+		clusterapi.CreateServiceAccount(clusterclient, x.Name, "default")
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-		clusterapi.CreateSecret(clusterclient, x.Name, "kube-system")
+		clusterapi.CreateSecret(clusterclient, x.Name, "default")
 		if err != nil {
 			return reconcile.Result{}, err
 		}
 
-		token, errtok := clusterapi.GetAuthorizationToken(clusterclient, "kube-system", x.Name)
+		token, errtok := clusterapi.GetAuthorizationToken(clusterclient, "default", x.Name)
 		if errtok != nil {
 			return reconcile.Result{}, err
 		}
@@ -710,7 +700,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tenant-admins-clusterrole",
-				Namespace: "kube-system",
+				Namespace: "default",
 			},
 			Rules: temprules,
 		}
@@ -723,7 +713,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		tempsub := rbacv1.Subject{
 			Kind:      "ServiceAccount",
 			Name:      x.Name,
-			Namespace: "kube-system",
+			Namespace: "default",
 		}
 		tempsubjects = append(tempsubjects, tempsub)
 		crbinding := &rbacv1.ClusterRoleBinding{
@@ -733,7 +723,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tenant-admins-clusterrolebinding",
-				Namespace: "kube-system",
+				Namespace: "default",
 			},
 			RoleRef: rbacv1.RoleRef{
 				Kind:     "ClusterRole",

@@ -159,6 +159,9 @@ func CreateClusterRole(k serde.Provider, cr *rbacv1.ClusterRole) error {
 	if err := client.Create(context.Background(), cr); err != nil {
 		if errors.IsAlreadyExists(err) {
 			err = client.Update(context.Background(), cr)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return err
