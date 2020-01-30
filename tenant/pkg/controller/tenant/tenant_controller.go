@@ -192,18 +192,8 @@ func removeSubject(x rbacv1.Subject, clusterclient serde.Provider, name string) 
 		},
 		Subjects: tempsubjects,
 	}
-	err := clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
-	if err != nil {
-		temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, name)
-		log.Info(temp)
-		return err
-	}
-	err = clusterapi.DeleteServiceAccount(clusterclient, x.Name, "default")
-	if err != nil {
-		temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, name)
-		log.Info(temp)
-		return err
-	}
+	clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
+	clusterapi.DeleteServiceAccount(clusterclient, x.Name, "default")
 	return nil
 }
 
@@ -488,7 +478,6 @@ func difference(a, b []rbacv1.Subject) []rbacv1.Subject {
 func finddeletedadmins(instance *tenancyv1alpha1.Tenant) []rbacv1.Subject {
 
 	tenancyMutex.RLock()
-	fmt.Printf("%#v", tenancymap)
 	//Find elements in previous update that are missing now, so we can delete those users
 	x := difference(tenancymap[instance.Name], instance.Spec.TenantAdmins)
 	tenancyMutex.RUnlock()
@@ -678,6 +667,21 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			}
 		}
 	}
+
+	for _, x := range instance.Spec.TenantAdmins {
+		obj := &corev1.ServiceAccount{}
+		obj.Name = x.Name
+		obj.Kind = "ServiceAccount"
+		obj.APIVersion = "v1"
+		obj.Namespace = instance.Spec.TenantAdminNamespaceName
+
+		if err := r.clientApply(obj); err != nil {
+			if !errors.IsAlreadyExists(err) {
+				return reconcile.Result{}, err
+			}
+		}
+	}
+
 	// Create RBACs for tenantAdmins, allow them to access tenant CR and tenantAdminNamespace.
 	if instance.Spec.TenantAdmins != nil {
 		// First, create cluster roles to allow them to access tenant CR and tenantAdminNamespace.
@@ -707,7 +711,9 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			},
 		}
 		if err := r.clientApply(cr); err != nil {
-			return reconcile.Result{}, err
+			if !errors.IsAlreadyExists(err) {
+				return reconcile.Result{}, err
+			}
 		}
 		crbindingName := fmt.Sprintf("%s-tenant-admins-rolebinding", instance.Name)
 		crbinding := &rbacv1.ClusterRoleBinding{
@@ -727,7 +733,9 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			},
 		}
 		if err := r.clientApply(crbinding); err != nil {
-			return reconcile.Result{}, err
+			if !errors.IsAlreadyExists(err) {
+				return reconcile.Result{}, err
+			}
 		}
 		tenantnamespacepoilcy := rbacv1.PolicyRule{
 			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
@@ -754,7 +762,9 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			Rules: []rbacv1.PolicyRule{tenantnamespacepoilcy, podspolicy},
 		}
 		if err := r.clientApply(role); err != nil {
-			return reconcile.Result{}, err
+			if !errors.IsAlreadyExists(err) {
+				return reconcile.Result{}, err
+			}
 		}
 		rbinding := &rbacv1.RoleBinding{
 			TypeMeta: metav1.TypeMeta{
@@ -774,7 +784,9 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			},
 		}
 		if err := r.clientApply(rbinding); err != nil {
-			return reconcile.Result{}, err
+			if !errors.IsAlreadyExists(err) {
+				return reconcile.Result{}, err
+			}
 		}
 	}
 
@@ -866,16 +878,6 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 	}
 
 	for _, x := range instance.Spec.TenantAdmins {
-		obj := &corev1.ServiceAccount{}
-		obj.Name = x.Name
-		obj.Kind = "ServiceAccount"
-		obj.APIVersion = "v1"
-		obj.Namespace = instance.Spec.TenantAdminNamespaceName
-
-		if err := r.clientApply(obj); err != nil {
-			return reconcile.Result{}, err
-		}
-
 		token, errtok := r.GetAuthorizationToken(instance.Spec.TenantAdminNamespaceName, x.Name)
 		if errtok != nil {
 			return reconcile.Result{}, err
@@ -892,7 +894,6 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		}
 	}
 	tenancyMutex.Lock()
-	fmt.Printf("%#v", tenancymap)
 	tenancymap[instance.Name] = instance.Spec.TenantAdmins
 	tenancyMutex.Unlock()
 	log.Info("Created Tenancy in CR and Vault")
