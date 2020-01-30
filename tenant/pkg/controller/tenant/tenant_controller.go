@@ -20,6 +20,7 @@ import (
 	"context"
 	goerr "errors"
 	"fmt"
+	"gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/serde"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/diamanticom/multi-tenancy/tenant/clusterapi"
@@ -37,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+	"sync"
 	"time"
 )
 
@@ -47,7 +49,9 @@ const VaultKvPath = "kv"
 
 // Keep per tenancy vault keys in this map.
 //For now not using it, going forward make use of it
-var secertsmap map[string]string
+var doOnce sync.Once
+var tenancymap map[string][]rbacv1.Subject
+var tenancyMutex *sync.RWMutex
 var sp_ns string = "default"
 
 /**
@@ -162,6 +166,47 @@ func (r *ReconcileTenant) GetAuthorizationToken(ns string, serviceAccountName st
 	return "", fmt.Errorf("valid token could not be found")
 }
 
+func removeSubject(x rbacv1.Subject, clusterclient serde.Provider, name string) error {
+	t := fmt.Sprintf("Removing subject %s", x.Name)
+	log.Info(t)
+	tempsubjects := make([]rbacv1.Subject, 0)
+	temp := rbacv1.Subject{
+		Kind:      "ServiceAccount",
+		Name:      x.Name,
+		Namespace: "default",
+	}
+	tempsubjects = append(tempsubjects, temp)
+	crbinding := &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacv1.SchemeGroupVersion.String(),
+			Kind:       "ClusterRoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tenant-admins-clusterrolebinding",
+			Namespace: "default",
+		},
+		RoleRef: rbacv1.RoleRef{
+			Kind:     "ClusterRole",
+			Name:     "cluster-admin",
+			APIGroup: "rbac.authorization.k8s.io",
+		},
+		Subjects: tempsubjects,
+	}
+	err := clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
+	if err != nil {
+		temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, name)
+		log.Info(temp)
+		return err
+	}
+	err = clusterapi.DeleteServiceAccount(clusterclient, x.Name, "default")
+	if err != nil {
+		temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, name)
+		log.Info(temp)
+		return err
+	}
+	return nil
+}
+
 func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tenant) error {
 
 	//
@@ -176,13 +221,12 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 	clusterclient := clusterapi.GetCluster()
 
 	for _, x := range instance.Spec.TenantAdmins {
-		err := clusterapi.DeleteServiceAccount(clusterclient, x.Name, "kube-system")
+		err := removeSubject(x, clusterclient, instance.Name)
 		if err != nil {
-			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
-			log.Info(temp)
 			return err
 		}
-
+	}
+	/*
 		all := []string{"*"}
 		none := []string{""}
 		rules := rbacv1.PolicyRule{
@@ -200,47 +244,18 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tenant-admins-clusterrole",
-				Namespace: "kube-system",
+				Namespace: "default",
 			},
 			Rules: temprules,
 		}
-		err = clusterapi.DeleteClusterRole(clusterclient, cr)
+		err := clusterapi.DeleteClusterRole(clusterclient, cr)
 		if err != nil {
-			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
+			temp := fmt.Sprintf("Unable to delete cluster roles  %s for  tenant %s", x.Name, instance.Name)
 			log.Info(temp)
 			return err
 		}
+	*/
 
-		tempsubjects := make([]rbacv1.Subject, 0)
-		temp := rbacv1.Subject{
-			Kind:      "ServiceAccount",
-			Name:      x.Name,
-			Namespace: "kube-system",
-		}
-		tempsubjects = append(tempsubjects, temp)
-		crbinding := &rbacv1.ClusterRoleBinding{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: rbacv1.SchemeGroupVersion.String(),
-				Kind:       "ClusterRoleBinding",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "tenant-admins-clusterrolebinding",
-				Namespace: "kube-system",
-			},
-			RoleRef: rbacv1.RoleRef{
-				Kind:     "ClusterRole",
-				Name:     "cluster-admin",
-				APIGroup: "rbac.authorization.k8s.io",
-			},
-			Subjects: tempsubjects,
-		}
-		err = clusterapi.DeleteClusterRoleBinding(clusterclient, crbinding)
-		if err != nil {
-			temp := fmt.Sprintf("Unable to delete service account %s for  tenant %s", x.Name, instance.Name)
-			log.Info(temp)
-			return err
-		}
-	}
 	err := r.DeleteTenantSAandSecret(sp_ns, instance.Name)
 	if err != nil {
 		return err
@@ -267,6 +282,9 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 	}
 	r.Client.Delete(context.TODO(), tenantAdminNs)
 	r.DeleteTenancy(instance.Name, instance.Spec.TenantAdminNamespaceName)
+	tenancyMutex.Lock()
+	delete(tenancymap, instance.Name)
+	tenancyMutex.Unlock()
 
 	/*
 		for _, x := range instance.Spec.TenantAdmins {
@@ -314,18 +332,6 @@ func (r *ReconcileTenant) DeleteTenantSAandSecret(ns string, tenancyname string)
 		return err
 	}
 
-	objs := &corev1.Secret{}
-	objs.Name = tenancyname
-	objs.Kind = "Secret"
-	objs.APIVersion = "v1"
-	objs.Type = corev1.SecretTypeServiceAccountToken
-	objs.Namespace = ns
-	objs.Annotations = make(map[string]string, 0)
-	objs.Annotations["kubernetes.io/service-account.name"] = tenancyname
-
-	if err := r.Client.Delete(context.Background(), objs); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -464,6 +470,91 @@ func (r *ReconcileTenant) CreateTenancy(ns string, tenancyname string) error {
 	return nil
 }
 
+// difference returns the elements in `a` that aren't in `b`.
+func difference(a, b []rbacv1.Subject) []rbacv1.Subject {
+	mb := make(map[string]*rbacv1.Subject, len(b))
+	for _, x := range b {
+		mb[x.Name] = &rbacv1.Subject{}
+	}
+	var diff []rbacv1.Subject
+	for _, x := range a {
+		if _, found := mb[x.Name]; !found {
+			diff = append(diff, x)
+		}
+	}
+	return diff
+}
+
+func finddeletedadmins(instance *tenancyv1alpha1.Tenant) []rbacv1.Subject {
+
+	tenancyMutex.RLock()
+	fmt.Printf("%#v", tenancymap)
+	//Find elements in previous update that are missing now, so we can delete those users
+	x := difference(tenancymap[instance.Name], instance.Spec.TenantAdmins)
+	tenancyMutex.RUnlock()
+	return x
+}
+
+func (r *ReconcileTenant) removetenantadmins(admins []rbacv1.Subject, name string,
+	expectedOwnerRef metav1.OwnerReference, ns string) error {
+
+	clusterclient := clusterapi.GetCluster()
+	for _, x := range admins {
+		//CRB Delete
+		// SA delete
+		err := removeSubject(x, clusterclient, name)
+		if err != nil {
+			return err
+		}
+		temp := fmt.Sprintf("Removing admin : %s from tenant : %s", x.Name, name)
+		log.Info(temp)
+	}
+
+	//Add code to remove rolebinding and ClusterBinding
+	//  Roles and ClutserRoles can be removed when the tenancy is deleted
+	crbindingName := fmt.Sprintf("%s-tenant-admins-rolebinding", name)
+	crName := fmt.Sprintf("%s-tenant-admin-role", name)
+	crbinding := &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacv1.SchemeGroupVersion.String(),
+			Kind:       "ClusterRoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            crbindingName,
+			OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
+		},
+		Subjects: admins,
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     crName,
+		},
+	}
+	r.Client.Delete(context.TODO(), crbinding)
+
+	rbinding := &rbacv1.RoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacv1.SchemeGroupVersion.String(),
+			Kind:       "RoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "tenant-admins-rolebinding",
+			Namespace:       ns,
+			OwnerReferences: []metav1.OwnerReference{expectedOwnerRef},
+		},
+		Subjects: admins,
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     "tenant-admin-role",
+		},
+	}
+
+	r.Client.Delete(context.TODO(), rbinding)
+
+	return nil
+}
+
 // Reconcile reads that state of the cluster for a Tenant object and makes changes based on the state read
 // and what is in the Tenant.Spec
 // Automatically generate RBAC rules to allow the Controller to read and write related resources
@@ -474,6 +565,12 @@ func (r *ReconcileTenant) CreateTenancy(ns string, tenancyname string) error {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;create;update;patch
 func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 
+	doOnce.Do(func() {
+		log.Info("Initialize mutex and make tenancy map")
+		tenancyMutex = &sync.RWMutex{}
+		tenancymap = make(map[string][]rbacv1.Subject, 0)
+		// Other things to do once
+	})
 	// Fetch the Tenant instance
 	instance := &tenancyv1alpha1.Tenant{}
 	// Tenant is a cluster scoped CR, we should clear the namespace field in request
@@ -528,6 +625,14 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		}
 
 		return reconcile.Result{}, err
+	}
+
+	tenancyMutex.RLock()
+	_, ok := tenancymap[instance.Name]
+	tenancyMutex.RUnlock()
+	if ok == true {
+		deletedadmins := finddeletedadmins(instance)
+		r.removetenantadmins(deletedadmins, instance.Name, expectedOwnerRef, instance.Spec.TenantAdminNamespaceName)
 	}
 
 	log.Info("Successfully added finalizer for tenant object ")
@@ -679,16 +784,16 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 	for _, x := range instance.Spec.TenantAdmins {
 		// There should be a loop here for all clusters in the tenancy
 		// XXX: TODO make it a part of the clutser API integration
-		clusterapi.CreateServiceAccount(clusterclient, x.Name, "kube-system")
+		clusterapi.CreateServiceAccount(clusterclient, x.Name, "default")
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-		clusterapi.CreateSecret(clusterclient, x.Name, "kube-system")
+		clusterapi.CreateSecret(clusterclient, x.Name, "default")
 		if err != nil {
 			return reconcile.Result{}, err
 		}
 
-		token, errtok := clusterapi.GetAuthorizationToken(clusterclient, "kube-system", x.Name)
+		token, errtok := clusterapi.GetAuthorizationToken(clusterclient, "default", x.Name)
 		if errtok != nil {
 			return reconcile.Result{}, err
 		}
@@ -710,7 +815,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tenant-admins-clusterrole",
-				Namespace: "kube-system",
+				Namespace: "default",
 			},
 			Rules: temprules,
 		}
@@ -723,7 +828,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 		tempsub := rbacv1.Subject{
 			Kind:      "ServiceAccount",
 			Name:      x.Name,
-			Namespace: "kube-system",
+			Namespace: "default",
 		}
 		tempsubjects = append(tempsubjects, tempsub)
 		crbinding := &rbacv1.ClusterRoleBinding{
@@ -733,7 +838,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tenant-admins-clusterrolebinding",
-				Namespace: "kube-system",
+				Namespace: "default",
 			},
 			RoleRef: rbacv1.RoleRef{
 				Kind:     "ClusterRole",
@@ -786,6 +891,10 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			return reconcile.Result{}, err
 		}
 	}
+	tenancyMutex.Lock()
+	fmt.Printf("%#v", tenancymap)
+	tenancymap[instance.Name] = instance.Spec.TenantAdmins
+	tenancyMutex.Unlock()
 	log.Info("Created Tenancy in CR and Vault")
 
 	return reconcile.Result{}, nil
