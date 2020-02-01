@@ -245,11 +245,6 @@ func (r *ReconcileTenant) deleteExternalResources(instance *tenancyv1alpha1.Tena
 		}
 	*/
 
-	err := r.DeleteTenantSAandSecret(sp_ns, instance.Name)
-	if err != nil {
-		return err
-	}
-
 	clusterapi.DeleteCluster()
 	//Delete the tenant namespace
 	expectedOwnerRef := metav1.OwnerReference{
@@ -308,51 +303,6 @@ func getTenantAdminNames(admins []rbacv1.Subject) []string {
 		temp = append(temp, x.Name)
 	}
 	return temp
-}
-
-func (r *ReconcileTenant) DeleteTenantSAandSecret(ns string, tenancyname string) error {
-	obj := &corev1.ServiceAccount{}
-	obj.Name = tenancyname
-	obj.Kind = "ServiceAccount"
-	obj.APIVersion = "v1"
-	obj.Namespace = ns
-
-	if err := r.Client.Delete(context.Background(), obj); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *ReconcileTenant) CreateTenantSAandSecret(ns string, tenancyname string) error {
-	obj := &corev1.ServiceAccount{}
-	obj.Name = tenancyname
-	obj.Kind = "ServiceAccount"
-	obj.APIVersion = "v1"
-	obj.Namespace = ns
-
-	err := r.Client.Create(context.Background(), obj)
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return err
-	}
-
-	objs := &corev1.Secret{}
-	objs.Name = tenancyname
-	objs.Kind = "Secret"
-	objs.APIVersion = "v1"
-	objs.Type = corev1.SecretTypeServiceAccountToken
-	objs.Namespace = ns
-	objs.Annotations = make(map[string]string, 0)
-	objs.Annotations["kubernetes.io/service-account.name"] = tenancyname
-
-	if err := r.Client.Create(context.Background(), objs); err != nil {
-		if errors.IsAlreadyExists(err) {
-			return nil
-		} else {
-			return err
-		}
-	}
-	return nil
 }
 
 //To talk to vault generate a per tenancy secret token with Service account. Use this
@@ -811,7 +761,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			return reconcile.Result{}, err
 		}
 
-		_, errtok := clusterapi.GetAuthorizationToken(clusterclient, "default", x.Name)
+		token, errtok := clusterapi.GetAuthorizationToken(clusterclient, "default", x.Name)
 		if errtok != nil {
 			return reconcile.Result{}, err
 		}
