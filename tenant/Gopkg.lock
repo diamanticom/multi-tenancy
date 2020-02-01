@@ -1290,7 +1290,6 @@
     "github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1",
     "github.com/onsi/ginkgo",
     "github.com/onsi/gomega",
-    "gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/ptypes",
     "gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/secret",
     "gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/serde",
     "golang.org/x/net/context",

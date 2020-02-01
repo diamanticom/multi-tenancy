@@ -18,7 +18,7 @@ package tenant
 
 import (
 	"context"
-	goerr "errors"
+	"encoding/json"
 	"fmt"
 	"gitlab.eng.diamanti.com/software/mcm.git/dmc/pkg/serde"
 	"k8s.io/apimachinery/pkg/types"
@@ -39,7 +39,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sync"
-	"time"
 )
 
 var log = logf.Log.WithName("controller")
@@ -123,7 +122,7 @@ func (r *ReconcileTenant) GetAuthorizationTokenfromSecret(ns string, tenancyname
 		return "", err
 	}
 
-	token, ok := obj.Data["token"]
+	token, ok := obj.Data["vault-token"]
 	if !ok {
 		return "", fmt.Errorf("valid token could not be found")
 	}
@@ -358,32 +357,25 @@ func (r *ReconcileTenant) CreateTenantSAandSecret(ns string, tenancyname string)
 
 //To talk to vault generate a per tenancy secret token with Service account. Use this
 // as interface with vault
-func (r *ReconcileTenant) GenerateVaultToken(ns string, tenancyname string) (string, error) {
-	err := r.CreateTenantSAandSecret(sp_ns, tenancyname)
-	if err != nil {
-		log.Info("Not able to create SA and secret for vault ")
-		return "", err
-	}
-
-	time.Sleep(1 * time.Second)
-
-	token, err := r.GetAuthorizationTokenfromSecret(sp_ns, tenancyname)
+func (r *ReconcileTenant) GenerateVaultToken() (string, error) {
+	token, err := r.GetAuthorizationTokenfromSecret("default", "tenant-controller-secret")
 	if err != nil {
 		log.Info("Not able to token from tenant secret for vault ")
 		return "", err
 	}
+	fmt.Printf("\n----------------\nvault token is :%v\n", token)
 	return token, nil
 }
 
 func (r *ReconcileTenant) ConnecttoVault(ns string, tenancyname string) (secret.Store, error) {
 
-	InitVaultRootToken, err := r.GenerateVaultToken(ns, tenancyname)
+	InitVaultRootToken, err := r.GenerateVaultToken()
 	if err != nil {
 		log.Info("Not able to generate token for tenancy vault secret")
 		return nil, err
 	}
 
-	vault, err := secret.NewVaultStore(tenancyname, VaultAddress, InitVaultRootToken)
+	vault, err := secret.NewVaultStore("spektra/"+tenancyname, VaultAddress, InitVaultRootToken)
 	if err != nil {
 		log.Info("Not able to create Vault Store ")
 		return nil, err
@@ -421,7 +413,8 @@ func (r *ReconcileTenant) UpdateTargetToken(token string, ns string, tenancyname
 			"targettoken": []byte(token),
 		},
 	}, nil); err != nil {
-		goerr.New("Unable to store entry in KvDataSet")
+		fmt.Printf("Update Target Token:\n%v\n", err)
+		return err
 	}
 	return nil
 }
@@ -431,13 +424,14 @@ func (r *ReconcileTenant) UpdateMasterToken(token string, ns string, tenancyname
 	if err != nil {
 		return err
 	}
-	key := username + tenancyname
+	key := tenancyname + "-" + username
 	if err := vault.KvDataSet(VaultKvPath, key, &secret.KvEntry{
 		Data: map[string][]byte{
 			"mastertoken": []byte(token),
 		},
 	}, nil); err != nil {
-		goerr.New("Unable to store entry in KvDataSet")
+		fmt.Printf("Update Master Token:\n%v\n", err)
+		return err
 	}
 	return nil
 }
@@ -452,10 +446,17 @@ func (r *ReconcileTenant) CreateTenancy(ns string, tenancyname string) error {
 		Password: "",
 	}
 
-	_, err = vault.TenancyCreate(&t)
-	if err != nil {
-		goerr.New("Unable to create Tenancy in Vault")
+	out, errt := vault.TenancyCreate(&t)
+	if errt != nil {
+		fmt.Printf("valut error : %v\n", errt)
+		return errt
 	}
+
+	jb, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(jb))
 
 	return nil
 }
@@ -791,6 +792,11 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 	}
 
 	log.Info("Successfully added RBAC and SA on master cluster")
+	err = r.CreateTenancy(instance.Spec.TenantAdminNamespaceName, instance.Name)
+	if err != nil {
+		log.Info("Unable to Create tenancy in Vault")
+		return reconcile.Result{}, err
+	}
 	clusterclient := clusterapi.CreateCluster()
 	// Handle target cluster related tasks
 	for _, x := range instance.Spec.TenantAdmins {
@@ -805,7 +811,7 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 			return reconcile.Result{}, err
 		}
 
-		token, errtok := clusterapi.GetAuthorizationToken(clusterclient, "default", x.Name)
+		_, errtok := clusterapi.GetAuthorizationToken(clusterclient, "default", x.Name)
 		if errtok != nil {
 			return reconcile.Result{}, err
 		}
@@ -871,12 +877,6 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 
 	log.Info("Created Tenancy in target clusters")
 
-	err = r.CreateTenancy(instance.Spec.TenantAdminNamespaceName, instance.Name)
-	if err != nil {
-		log.Info("Unable to Create tenancy in Vault")
-		return reconcile.Result{}, err
-	}
-
 	for _, x := range instance.Spec.TenantAdmins {
 		token, errtok := r.GetAuthorizationToken(instance.Spec.TenantAdminNamespaceName, x.Name)
 		if errtok != nil {
@@ -899,5 +899,4 @@ func (r *ReconcileTenant) Reconcile(request reconcile.Request) (reconcile.Result
 	log.Info("Created Tenancy in CR and Vault")
 
 	return reconcile.Result{}, nil
-
 }
