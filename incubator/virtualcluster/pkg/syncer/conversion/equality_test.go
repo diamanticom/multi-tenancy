@@ -22,9 +22,19 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/utils/pointer"
+
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/apis/config"
 )
 
-func TestCheckKVEquality(t *testing.T) {
+func TestCheckDWKVEquality(t *testing.T) {
+	syncerConfig := &config.SyncerConfiguration{
+		DefaultOpaqueMetaDomains: []string{"kubernetes.io"},
+	}
+	spec := v1alpha1.VirtualclusterSpec{
+		TransparentMetaPrefixes: []string{"tp.x-k8s.io"},
+		OpaqueMetaPrefixes:      []string{"tenancy.x-k8s.io"},
+	}
 	for _, tt := range []struct {
 		name     string
 		super    map[string]string
@@ -124,9 +134,152 @@ func TestCheckKVEquality(t *testing.T) {
 				"tenancy.x-k8s.io/name": "name",
 			},
 		},
+		{
+			name: "ignore transparent key",
+			super: map[string]string{
+				"tenancy.x-k8s.io/name": "name",
+				"tp.x-k8s.io/foo":       "val",
+			},
+			virtual:  nil,
+			isEqual:  true,
+			expected: nil,
+		},
+		{
+			name: "exactly matches defaultOpaqueMetaDomain",
+			super: map[string]string{
+				"a":               "b",
+				"kubernetes.io/a": "b",
+			},
+			virtual: map[string]string{
+				"a":               "b",
+				"kubernetes.io/b": "c",
+			},
+			isEqual: true,
+		},
+		{
+			name: "subdomain matches defaultOpaqueMetaDomain",
+			super: map[string]string{
+				"a":                   "b",
+				"foo.kubernetes.io/a": "b",
+			},
+			virtual: map[string]string{
+				"a":                   "b",
+				"kubernetes.io/b":     "c",
+				"foo.kubernetes.io":   "a",
+				"bar.kubernetes.io/b": "c",
+			},
+			isEqual: true,
+		},
 	} {
 		t.Run(tt.name, func(tc *testing.T) {
-			got, equal := CheckKVEquality(tt.super, tt.virtual)
+			got, equal := Equality(syncerConfig, &spec).checkDWKVEquality(tt.super, tt.virtual)
+			if equal != tt.isEqual {
+				tc.Errorf("expected equal %v, got %v %v", tt.isEqual, equal, got)
+			} else {
+				if !equality.Semantic.DeepEqual(got, tt.expected) {
+					tc.Errorf("expected result %+v, got %+v", tt.expected, got)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckUWKVEquality(t *testing.T) {
+	spec := v1alpha1.VirtualclusterSpec{
+		TransparentMetaPrefixes: []string{"tp.x-k8s.io", "tp1.x-k8s.io"},
+		OpaqueMetaPrefixes:      []string{"tenancy.x-k8s.io"},
+	}
+	for _, tt := range []struct {
+		name     string
+		super    map[string]string
+		virtual  map[string]string
+		isEqual  bool
+		expected map[string]string
+	}{
+		{
+			name: "equal - no transparent keys",
+			super: map[string]string{
+				"a": "b",
+			},
+			virtual: map[string]string{
+				"a": "b",
+			},
+			isEqual:  true,
+			expected: nil,
+		},
+		{
+			name: "not equal - no transparent keys",
+			super: map[string]string{
+				"a":                "b",
+				"tenancy.x-k8s.io": "c",
+			},
+			virtual: map[string]string{
+				"a": "c",
+			},
+			isEqual:  true,
+			expected: nil,
+		},
+		{
+			name: "miss one transparent key",
+			super: map[string]string{
+				"a":           "b",
+				"b":           "c",
+				"tp.x-k8s.io": "a",
+			},
+			virtual: nil,
+			isEqual: false,
+			expected: map[string]string{
+				"tp.x-k8s.io": "a",
+			},
+		},
+		{
+			name: "miss two transparent keys",
+			super: map[string]string{
+				"a":            "b",
+				"tp.x-k8s.io":  "a",
+				"tp1.x-k8s.io": "a",
+			},
+			virtual: map[string]string{
+				"a": "b",
+			},
+			isEqual: false,
+			expected: map[string]string{
+				"a":            "b",
+				"tp.x-k8s.io":  "a",
+				"tp1.x-k8s.io": "a",
+			},
+		},
+		{
+			name: "has all transparent keys",
+			super: map[string]string{
+				"a":            "b",
+				"tp.x-k8s.io":  "a",
+				"tp1.x-k8s.io": "a",
+			},
+			virtual: map[string]string{
+				"tp.x-k8s.io":  "a",
+				"tp1.x-k8s.io": "a",
+			},
+			isEqual:  true,
+			expected: nil,
+		},
+		{
+			name: "wrong transparent key-val",
+			super: map[string]string{
+				"tenancy.x-k8s.io/name": "name",
+				"tp.x-k8s.io/foo":       "a",
+			},
+			virtual: map[string]string{
+				"tp.x-k8s.io/foo": "b",
+			},
+			isEqual: false,
+			expected: map[string]string{
+				"tp.x-k8s.io/foo": "a",
+			},
+		},
+	} {
+		t.Run(tt.name, func(tc *testing.T) {
+			got, equal := Equality(nil, &spec).checkUWKVEquality(tt.super, tt.virtual)
 			if equal != tt.isEqual {
 				tc.Errorf("expected equal %v, got %v", tt.isEqual, equal)
 			} else {
@@ -170,6 +323,26 @@ func TestCheckContainersImageEquality(t *testing.T) {
 			expected: nil,
 		},
 		{
+			name: "equal, container added by webhook",
+			pObj: []v1.Container{
+				{
+					Name:  "c1",
+					Image: "image1",
+				},
+				{
+					Name:  "c2",
+					Image: "image2",
+				},
+			},
+			vObj: []v1.Container{
+				{
+					Name:  "c2",
+					Image: "image2",
+				},
+			},
+			expected: nil,
+		},
+		{
 			name: "not equal",
 			pObj: []v1.Container{
 				{
@@ -202,9 +375,38 @@ func TestCheckContainersImageEquality(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "not equal, container added by webhook",
+			pObj: []v1.Container{
+				{
+					Name:  "c1",
+					Image: "image1",
+				},
+				{
+					Name:  "c2",
+					Image: "image2",
+				},
+			},
+			vObj: []v1.Container{
+				{
+					Name:  "c2",
+					Image: "image3",
+				},
+			},
+			expected: []v1.Container{
+				{
+					Name:  "c1",
+					Image: "image1",
+				},
+				{
+					Name:  "c2",
+					Image: "image3",
+				},
+			},
+		},
 	} {
 		t.Run(tt.name, func(tc *testing.T) {
-			got := CheckContainersImageEquality(tt.pObj, tt.vObj)
+			got := Equality(nil, nil).checkContainersImageEquality(tt.pObj, tt.vObj)
 			if !equality.Semantic.DeepEqual(got, tt.expected) {
 				t.Errorf("expected %+v, got %+v", tt.expected, got)
 			}
@@ -257,7 +459,7 @@ func TestCheckActiveDeadlineSecondsEquality(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(tc *testing.T) {
-			val, equal := CheckInt64Equality(tt.pObj, tt.vObj)
+			val, equal := Equality(nil, nil).checkInt64Equality(tt.pObj, tt.vObj)
 			if equal != tt.isEqual {
 				tc.Errorf("expected equal %v, got %v", tt.isEqual, equal)
 			}

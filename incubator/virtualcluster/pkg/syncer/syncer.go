@@ -17,10 +17,13 @@ limitations under the License.
 package syncer
 
 import (
+	"encoding/base64"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -29,21 +32,22 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
 
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
-	vcinformers "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/client/informers/externalversions/tenancy/v1alpha1"
-	vclisters "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/client/listers/tenancy/v1alpha1"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/cluster"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/controller"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/controllers"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/listener"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/manager"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
+	vcclient "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/clientset/versioned"
+	vcinformers "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/informers/externalversions/tenancy/v1alpha1"
+	vclisters "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/listers/tenancy/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/apis/config"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/cluster"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/listener"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/manager"
+	mc "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/mccontroller"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/metrics"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/resources"
 )
 
 const (
@@ -62,13 +66,19 @@ type Syncer struct {
 	workers int
 	// clusterSet holds the cluster collection in which cluster is running.
 	mu         sync.Mutex
-	clusterSet map[string]controller.ClusterInterface
-	// if this channel is closed, syncer will stop
-	stopChan <-chan struct{}
+	clusterSet map[string]mc.ClusterInterface
+}
+
+// Bootstrap is a bootstrapping interface for syncer, targets the initialization protocol
+type Bootstrap interface {
+	ListenAndServe(address, certFile, keyFile string)
+	Run(<-chan struct{})
 }
 
 func New(
+	config *config.SyncerConfiguration,
 	secretClient v1core.SecretsGetter,
+	virtualClusterClient vcclient.Interface,
 	virtualClusterInformer vcinformers.VirtualclusterInformer,
 	superMasterClient clientset.Interface,
 	superMasterInformers informers.SharedInformerFactory,
@@ -76,9 +86,8 @@ func New(
 	syncer := &Syncer{
 		secretClient: secretClient,
 		queue:        workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "virtual_cluster"),
-		workers:      constants.DefaultControllerWorkers,
-		clusterSet:   make(map[string]controller.ClusterInterface),
-		stopChan:     signals.SetupSignalHandler(),
+		workers:      constants.UwsControllerWorkerLow,
+		clusterSet:   make(map[string]mc.ClusterInterface),
 	}
 
 	// Handle VirtualCluster add&delete
@@ -103,7 +112,7 @@ func New(
 	multiClusterControllerManager := manager.New()
 	syncer.controllerManager = multiClusterControllerManager
 
-	controllers.Register(superMasterClient, superMasterInformers, multiClusterControllerManager)
+	resources.Register(config, superMasterClient, superMasterInformers, virtualClusterClient, virtualClusterInformer, multiClusterControllerManager)
 
 	return syncer
 }
@@ -138,9 +147,9 @@ func (s *Syncer) enqueueVirtualCluster(obj interface{}) {
 }
 
 // Run begins watching and downward&upward syncing.
-func (s *Syncer) Run() {
+func (s *Syncer) Run(stopChan <-chan struct{}) {
 	go func() {
-		if err := s.controllerManager.Start(s.stopChan); err != nil {
+		if err := s.controllerManager.Start(stopChan); err != nil {
 			klog.V(1).Infof("controller manager exit: %v", err)
 		}
 	}()
@@ -151,18 +160,30 @@ func (s *Syncer) Run() {
 		klog.Infof("starting virtual cluster controller")
 		defer klog.Infof("shutting down virtual cluster controller")
 
-		if !cache.WaitForCacheSync(s.stopChan, s.virtualClusterSynced) {
+		if !cache.WaitForCacheSync(stopChan, s.virtualClusterSynced) {
 			return
 		}
 
 		klog.V(5).Infof("starting workers")
 		for i := 0; i < s.workers; i++ {
-			go wait.Until(s.run, 1*time.Second, s.stopChan)
+			go wait.Until(s.run, 1*time.Second, stopChan)
 		}
-		<-s.stopChan
+		<-stopChan
 	}()
 
 	return
+}
+
+// ListenAndServe initializes a server to respond to HTTP network requests on the syncer.
+func (s *Syncer) ListenAndServe(address, certFile, keyFile string) {
+	metrics.Register()
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	if certFile != "" && keyFile != "" {
+		klog.Fatal(http.ListenAndServeTLS(address, certFile, keyFile, mux))
+	} else {
+		klog.Fatal(http.ListenAndServe(address, mux))
+	}
 }
 
 // run runs a run thread that just dequeues items, processes them, and marks them done.
@@ -244,15 +265,25 @@ func (s *Syncer) addCluster(key string, vc *v1alpha1.Virtualcluster) error {
 
 	clusterName := conversion.ToClusterKey(vc)
 
-	adminKubeConfigSecret, err := s.secretClient.Secrets(clusterName).Get(KubeconfigAdmin, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to get secret (%s) for virtual cluster %s/%s: %v", KubeconfigAdmin, vc.Namespace, vc.Name, err)
+	var adminKubeConfigBytes []byte
+	if adminKubeConfig, exists := vc.GetAnnotations()[constants.LabelAdminKubeConfig]; exists {
+		decoded, err := base64.StdEncoding.DecodeString(adminKubeConfig)
+		if err != nil {
+			return fmt.Errorf("failed to decode kubeconfig from annotations %s: %v", constants.LabelAdminKubeConfig, err)
+		}
+		adminKubeConfigBytes = decoded
+	} else {
+		adminKubeConfigSecret, err := s.secretClient.Secrets(clusterName).Get(KubeconfigAdmin, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get secret (%s) for virtual cluster in root namespace %s: %v", KubeconfigAdmin, clusterName, err)
+		}
+		adminKubeConfigBytes = adminKubeConfigSecret.Data[KubeconfigAdmin]
 	}
-	clusterRestConfig, err := clientcmd.RESTConfigFromKubeConfig(adminKubeConfigSecret.Data[KubeconfigAdmin])
+
+	tenantCluster, err := cluster.NewTenantCluster(clusterName, vc.Namespace, vc.Name, string(vc.UID), s.lister, adminKubeConfigBytes, cluster.Options{})
 	if err != nil {
-		return fmt.Errorf("failed to build rest config for virtual cluster %s/%s: %v", vc.Namespace, vc.Name, err)
+		return fmt.Errorf("failed to new tenant cluster %s/%s: %v", vc.Namespace, vc.Name, err)
 	}
-	innerCluster := cluster.New(clusterName, clusterRestConfig, cluster.Options{})
 
 	s.mu.Lock()
 	if _, exist := s.clusterSet[key]; exist {
@@ -262,18 +293,18 @@ func (s *Syncer) addCluster(key string, vc *v1alpha1.Virtualcluster) error {
 
 	// for each resource type of the newly added VirtualCluster, we add a listener
 	for _, clusterChangeListener := range listener.Listeners {
-		clusterChangeListener.AddCluster(innerCluster)
+		clusterChangeListener.AddCluster(tenantCluster)
 	}
 
-	s.clusterSet[key] = innerCluster
+	s.clusterSet[key] = tenantCluster
 	s.mu.Unlock()
 
-	go s.runCluster(innerCluster)
+	go s.runCluster(tenantCluster, vc)
 
 	return nil
 }
 
-func (s *Syncer) runCluster(cluster controller.ClusterInterface) {
+func (s *Syncer) runCluster(cluster *cluster.Cluster, vc *v1alpha1.Virtualcluster) {
 	go func() {
 		err := cluster.Start()
 		klog.Infof("cluster %s shutdown: %v", cluster.GetClusterName(), err)
@@ -281,8 +312,10 @@ func (s *Syncer) runCluster(cluster controller.ClusterInterface) {
 
 	if !cluster.WaitForCacheSync() {
 		klog.Warningf("failed to sync cache for cluster %s, retry", cluster.GetClusterName())
-		s.removeCluster(cluster.GetClusterName())
-		s.queue.AddAfter(cluster.GetClusterName(), 5*time.Second)
+		key, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(vc)
+		s.removeCluster(key)
+		s.queue.AddAfter(key, 5*time.Second)
 		return
 	}
+	cluster.SetSynced()
 }

@@ -19,35 +19,37 @@ package handler
 import (
 	"k8s.io/apimachinery/pkg/api/meta"
 
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/reconciler"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/reconciler"
 )
 
 type EnqueueRequestForObject struct {
-	Cluster *reconciler.ClusterInfo
-	Queue   Queue
+	ClusterName string
+	Queue       Queue
 }
 
-func (e *EnqueueRequestForObject) enqueue(obj interface{}, event reconciler.EventType) {
+func (e *EnqueueRequestForObject) enqueue(obj interface{}) {
 	o, err := meta.Accessor(obj)
 	if err != nil {
 		return
 	}
 
-	r := reconciler.Request{Cluster: e.Cluster, Event: event, Obj: obj}
+	r := reconciler.Request{}
+	r.ClusterName = e.ClusterName
 	r.Namespace = o.GetNamespace()
 	r.Name = o.GetName()
+	r.UID = string(o.GetUID())
 
 	e.Queue.Add(r)
 }
 
 func (e *EnqueueRequestForObject) OnAdd(obj interface{}) {
-	e.enqueue(obj, reconciler.AddEvent)
+	e.enqueue(obj)
 }
 
 func (e *EnqueueRequestForObject) OnUpdate(oldObj, newObj interface{}) {
-	e.enqueue(newObj, reconciler.UpdateEvent)
+	e.enqueue(newObj)
 }
 
 func (e *EnqueueRequestForObject) OnDelete(obj interface{}) {
-	e.enqueue(obj, reconciler.DeleteEvent)
+	e.enqueue(obj)
 }

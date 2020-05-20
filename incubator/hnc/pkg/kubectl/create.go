@@ -23,8 +23,8 @@ import (
 )
 
 var createCmd = &cobra.Command{
-	Use:   "create -n parent child1 [child2 ...]",
-	Short: "Creates a subnamespace under the given parent. Synonym for `set parent --requiredChild child1[,child2,...]`.",
+	Use:   "create -n PARENT CHILD",
+	Short: "Creates a subnamespace under the given parent.",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		parent, _ := cmd.Flags().GetString("namespace")
@@ -32,14 +32,12 @@ var createCmd = &cobra.Command{
 			fmt.Println("Error: parent must be set via --namespace or -n")
 			os.Exit(1)
 		}
-		// TODO: ensure the specified children don't already exist. If they do exist and are assigned to
-		// another namespace, this will be caught by the admission controller.
-		updates := hcUpdates{requiredChildren: args}
-		updateHC(client, updates, parent)
+		// Create the anchor, the custom resource representing the subnamespace.
+		client.createAnchor(parent, args[0])
 	},
 }
 
 func newCreateCmd() *cobra.Command {
-	createCmd.Flags().StringP("namespace", "n", "", "The parent namespace for the new child namespace(s)")
+	createCmd.Flags().StringP("namespace", "n", "", "The parent namespace for the new subnamespace")
 	return createCmd
 }

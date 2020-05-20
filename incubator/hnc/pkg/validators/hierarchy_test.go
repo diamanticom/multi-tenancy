@@ -9,21 +9,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	api "github.com/kubernetes-sigs/multi-tenancy/incubator/hnc/api/v1alpha1"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/hnc/pkg/forest"
+	api "sigs.k8s.io/multi-tenancy/incubator/hnc/api/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/hnc/pkg/foresttest"
 )
 
 func TestStructure(t *testing.T) {
-	f := forest.NewForest()
-	// Create the following forest:
-	// foo -> bar
-	//     |
-	//     -> fooRC (RequiredChild of foo)
-	foo := createNS(f, "foo", nil)
-	bar := createNS(f, "bar", nil)
-	createRCNS(f, "fooRC", foo)
-	createNS(f, "baz", nil)
-	bar.SetParent(foo)
+	f := foresttest.Create("-a-") // a <- b; c
 	h := &Hierarchy{Forest: f}
 	l := zap.Logger(false)
 
@@ -31,32 +22,22 @@ func TestStructure(t *testing.T) {
 		name string
 		nnm  string
 		pnm  string
-		rcm  []string
 		fail bool
 	}{
-		{name: "ok", nnm: "foo", pnm: "baz"},
-		{name: "missing parent", nnm: "foo", pnm: "brumpf", fail: true},
-		{name: "self-cycle", nnm: "foo", pnm: "foo", fail: true},
-		{name: "other cycle", nnm: "foo", pnm: "bar", fail: true},
-		{name: "rc ok", rcm: []string{"bar-baz"}, nnm: "foo"},
-		{name: "rc upper invalid", rcm: []string{"BAR"}, nnm: "foo", fail: true},
-		{name: "rc begin invalid", rcm: []string{"^bar"}, nnm: "foo", fail: true},
-		{name: "rc end invalid", rcm: []string{"bar^"}, nnm: "foo", fail: true},
-		{name: "rc char invalid", rcm: []string{"bar.baz"}, nnm: "foo", fail: true},
-		{name: "rc max str len", rcm: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nnm: "foo"},
-		{name: "rc over max str len", rcm: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nnm: "foo", fail: true},
-		{name: "rc ok", rcm: []string{"bar"}, nnm: "foo"},
-		{name: "rc invalid - is an rc of another NS", rcm: []string{"fooRC"}, nnm: "bar", fail: true},
-		{name: "rc invalid - is a child of another NS", rcm: []string{"bar"}, nnm: "fooRC", fail: true},
-		{name: "rc invalid - is a root", rcm: []string{"foo"}, nnm: "bar", fail: true},
-		{name: "parent ok", nnm: "bar", pnm: "fooRC"},
-		{name: "parent invalid - is an rc of another NS", nnm: "fooRC", pnm: "bar", fail: true},
+		{name: "ok", nnm: "a", pnm: "c"},
+		{name: "missing parent", nnm: "a", pnm: "brumpf", fail: true},
+		{name: "self-cycle", nnm: "a", pnm: "a", fail: true},
+		{name: "other cycle", nnm: "a", pnm: "b", fail: true},
+		{name: "exclude kube-system", nnm: "a", pnm: "kube-system", fail: true},
+		{name: "exclude kube-public", nnm: "a", pnm: "kube-public", fail: true},
+		{name: "exclude hnc-system", nnm: "a", pnm: "hnc-system", fail: true},
+		{name: "exclude cert-manager", nnm: "a", pnm: "cert-manager", fail: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Setup
 			g := NewGomegaWithT(t)
-			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.pnm, RequiredChildren: tc.rcm}}
+			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.pnm}}
 			hc.ObjectMeta.Name = api.Singleton
 			hc.ObjectMeta.Namespace = tc.nnm
 			req := &request{hc: hc}
@@ -73,42 +54,41 @@ func TestStructure(t *testing.T) {
 
 func TestAuthz(t *testing.T) {
 	tests := []struct {
-		name    string
-		authz   fakeAuthz
-		from    string
-		to      string
-		fail    bool
-		unexist []string
+		name   string
+		server fakeServer
+		forest string
+		nm     string
+		to     string
+		code   int32 // defaults to 0 (success)
 	}{
-		{name: "no permission in tree", from: "c", to: "g", fail: true},
-		{name: "root permission in tree", from: "c", to: "g", authz: fakeAuthz{"a"}},
-		{name: "cur parent only in tree", from: "c", to: "g", authz: fakeAuthz{"c"}, fail: true},
-		{name: "dst only in tree", from: "c", to: "g", authz: fakeAuthz{"g"}, fail: true},
-		{name: "dst only across trees", from: "c", to: "h", authz: fakeAuthz{"h"}, fail: true},
-		{name: "cur root only across trees", from: "c", to: "h", authz: fakeAuthz{"a"}, fail: true},
-		{name: "dst and cur parent across trees", from: "c", to: "h", authz: fakeAuthz{"c", "h"}, fail: true},
-		{name: "dst and cur root across trees", from: "c", to: "h", authz: fakeAuthz{"a", "h"}},
-		{name: "mrca in tree", from: "e", to: "g", authz: fakeAuthz{"d"}},
-		{name: "parents in tree", from: "c", to: "g", authz: fakeAuthz{"c", "g"}, fail: true},
-		{name: "parents in tree, missing intermediate", from: "c", to: "g", authz: fakeAuthz{"c", "g"}, unexist: []string{"b", "d"}, fail: true},
-		{name: "parents in tree, missing ancestors", from: "c", to: "g", authz: fakeAuthz{"c", "g"}, unexist: []string{"a", "b", "d"}},
-		{name: "parents in tree, missing root", from: "c", to: "g", authz: fakeAuthz{"c", "g"}, unexist: []string{"a"}, fail: true},
-		{name: "grandparents in tree, missing root", from: "c", to: "g", authz: fakeAuthz{"b", "g"}, unexist: []string{"a"}},
+		{name: "no permission in tree", forest: "-aab", nm: "d", to: "c", code: 401},                                 // a <- (b <- d, c)
+		{name: "permission on root in tree", forest: "-aab", nm: "d", to: "c", server: "a"},                          // a <- (b <- d, c)
+		{name: "permission on parents but not root", forest: "-aabd", nm: "e", to: "c", server: "bc", code: 401},     // a <- (b <- d <- e, c)
+		{name: "permission on dst only", forest: "--a", nm: "c", to: "b", server: "b", code: 401},                    // a <- c; b
+		{name: "permission on cur root only", forest: "--a", nm: "c", to: "b", server: "a", code: 401},               // a <- b; b
+		{name: "permission on parents, but not cur root", forest: "-a-b", nm: "d", to: "c", server: "bc", code: 401}, // a <- b <- d; c
+		{name: "permission on dst and cur root", forest: "-a-b", nm: "d", to: "c", server: "ac"},                     // a <- b <- d; c
+		{name: "permission on mrca", forest: "-abbc", nm: "e", to: "d", server: "b"},                                 // a <- b <- (c <- e, d)
+		{name: "unsynced parent", forest: "-z", nm: "b", to: "a", server: "a", code: 503},                            // a; z <- b (z hasn't been synced)
+		{name: "missing parent", forest: "-z", nm: "b", to: "a", server: "a:z"},                                      // a; z <- b (z is missing)
+		{name: "missing ancestor", forest: "z-a", nm: "c", to: "b", server: "ab", code: 403},                         // z <- a <- c; b (z hasn't been synced)
+		{name: "unsynced ancestor", forest: "z-a", nm: "c", to: "b", server: "ab:z", code: 403},                      // z <- a <- c; b (z is missing)
+		{name: "member of cycle (all permission)", forest: "cab", nm: "c", to: "", server: "abc"},                    // a,b,c in cycle
+		{name: "member of cycle (no permission)", forest: "cab", nm: "c", to: "", server: "", code: 401},             // a,b,c in cycle
+		{name: "descendant of cycle", forest: "baa", nm: "c", to: "b", server: "ab", code: 403},                      // c -> a <-> b
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Setup
 			g := NewGomegaWithT(t)
-			f := createTestForest(tc.unexist)
-			foo := createNS(f, "foo", nil)
-			foo.SetParent(f.Get(tc.from))
-			h := &Hierarchy{Forest: f, authz: tc.authz}
+			f := foresttest.Create(tc.forest)
+			h := &Hierarchy{Forest: f, server: tc.server}
 			l := zap.Logger(false)
 
 			// Create request
 			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.to}}
 			hc.ObjectMeta.Name = api.Singleton
-			hc.ObjectMeta.Namespace = "foo"
+			hc.ObjectMeta.Namespace = tc.nm
 			req := &request{hc: hc, ui: &authn.UserInfo{Username: "jen"}}
 
 			// Test
@@ -116,75 +96,47 @@ func TestAuthz(t *testing.T) {
 
 			// Report
 			logResult(t, got.AdmissionResponse.Result)
-			//reason := got.AdmissionResponse.Result.Reason
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			g.Expect(got.AdmissionResponse.Result.Code).Should(Equal(tc.code))
 		})
 	}
-}
-
-// createTestForest creates the following forest:
-// a -> b -> c -> foo
-//   |
-//   -> d -> e
-//        |
-//        -> g
-// h
-//
-// The ue (UnExists) parameter prevents the specified namespaces from having SetExists called on
-// them.
-func createTestForest(ue []string) *forest.Forest {
-	f := forest.NewForest()
-	a := createNS(f, "a", ue)
-	b := createNS(f, "b", ue)
-	c := createNS(f, "c", ue)
-	d := createNS(f, "d", ue)
-	e := createNS(f, "e", ue)
-	g := createNS(f, "g", ue)
-	createNS(f, "h", ue)
-	b.SetParent(a)
-	c.SetParent(b)
-	d.SetParent(a)
-	e.SetParent(d)
-	g.SetParent(d)
-	return f
-}
-
-// createNS creates nnm and sets it to existing, unless it's listed in the ue (UnExists) list. Note
-// that we can't call UnsetExists() since that also destroys the hierarchy and cleans it up.
-func createNS(f *forest.Forest, nnm string, ue []string) *forest.Namespace {
-	ns := f.Get(nnm)
-	for _, u := range ue { // hey, it's fast _enough_ :)
-		if u == nnm {
-			return ns
-		}
-	}
-	ns.SetExists()
-	return ns
-}
-
-// createRCNS creates rc (requiredChild) and sets its parent and requiredChildOf to nm and sets it
-// to existing.
-func createRCNS(f *forest.Forest, rc string, p *forest.Namespace) *forest.Namespace {
-	ns := f.Get(rc)
-	ns.SetParent(p)
-	ns.RequiredChildOf = p.Name()
-	ns.SetExists()
-	return ns
 }
 
 func logResult(t *testing.T, result *metav1.Status) {
 	t.Logf("Got reason %q, code %d, msg %q", result.Reason, result.Code, result.Message)
 }
 
-// fakeAuthz implements authzClient. Any namespaces that are in the slice are allowed; anything else
-// is denied.
-type fakeAuthz []string
+// fakeServer implements serverClient. It's implemented as a string separated by a colon (":") with
+// the following meanings:
+// * Anything *before* the colon passes the IsAdmin check
+// * Anything *after* the colon *fails* the Exists check
+// If the colon is missing, it's assumed to come at the end of the string
+type fakeServer string
 
-func (f fakeAuthz) IsAdmin(_ context.Context, _ *authn.UserInfo, nnm string) (bool, error) {
+func (f fakeServer) IsAdmin(_ context.Context, _ *authn.UserInfo, nnm string) (bool, error) {
 	for _, n := range f {
-		if n == nnm {
+		if nnm == string(n) {
 			return true, nil
+		}
+		if n == ':' {
+			return false, nil
 		}
 	}
 	return false, nil
+}
+
+func (f fakeServer) Exists(_ context.Context, nnm string) (bool, error) {
+	foundColon := false
+	for _, n := range f {
+		if n == ':' {
+			foundColon = true
+			continue
+		}
+		if !foundColon {
+			continue
+		}
+		if nnm == string(n) {
+			return false, nil
+		}
+	}
+	return true, nil
 }

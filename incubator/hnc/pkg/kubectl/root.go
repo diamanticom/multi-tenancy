@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
@@ -30,7 +31,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 
-	api "github.com/kubernetes-sigs/multi-tenancy/incubator/hnc/api/v1alpha1"
+	api "sigs.k8s.io/multi-tenancy/incubator/hnc/api/v1alpha1"
 )
 
 var k8sClient *kubernetes.Clientset
@@ -43,6 +44,10 @@ type realClient struct{}
 type Client interface {
 	getHierarchy(nnm string) *api.HierarchyConfiguration
 	updateHierarchy(hier *api.HierarchyConfiguration, reason string)
+	createAnchor(nnm string, hnnm string)
+	getAnchorNames(nnm string) []string
+	getHNCConfig() *api.HNCConfiguration
+	updateHNCConfig(*api.HNCConfiguration)
 }
 
 func init() {
@@ -53,7 +58,11 @@ func init() {
 	kubecfgFlags := genericclioptions.NewConfigFlags(false)
 
 	rootCmd = &cobra.Command{
-		Use:   "kubectl hierarchical-namespaces",
+		// We should use "kubectl hns" instead of "kubectl-hns" to invoke the plugin.
+		// However, since only the first word of the Use field will be displayed in the
+		// "Usage" section of a root command, we set it to "kubectl-hns" here so that both
+		// "kubectl" and "hns" will be shown in the "Usage" section.
+		Use:   "kubectl-hns",
 		Short: "Manipulates hierarchical namespaces provided by HNC",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			config, err := kubecfgFlags.ToRESTConfig()
@@ -71,7 +80,7 @@ func init() {
 			hncConfig := *config
 			hncConfig.ContentConfig.GroupVersion = &api.GroupVersion
 			hncConfig.APIPath = "/apis"
-			hncConfig.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: scheme.Codecs}
+			hncConfig.NegotiatedSerializer = serializer.WithoutConversionCodecFactory{CodecFactory: scheme.Codecs}
 			hncConfig.UserAgent = rest.DefaultKubernetesUserAgent()
 			hncClient, err = rest.UnversionedRESTClientFor(&hncConfig)
 			if err != nil {
@@ -87,6 +96,7 @@ func init() {
 	rootCmd.AddCommand(newDescribeCmd())
 	rootCmd.AddCommand(newTreeCmd())
 	rootCmd.AddCommand(newCreateCmd())
+	rootCmd.AddCommand(newConfigCmd())
 }
 
 func Execute() {
@@ -111,7 +121,7 @@ func (cl *realClient) getHierarchy(nnm string) *api.HierarchyConfiguration {
 	hier := &api.HierarchyConfiguration{}
 	hier.Name = api.Singleton
 	hier.Namespace = nnm
-	err := hncClient.Get().Resource(api.Resource).Namespace(nnm).Name(api.Singleton).Do().Into(hier)
+	err := hncClient.Get().Resource(api.HierarchyConfigurations).Namespace(nnm).Name(api.Singleton).Do().Into(hier)
 	if err != nil && !errors.IsNotFound(err) {
 		fmt.Printf("Error reading hierarchy for %s: %s\n", nnm, err)
 		os.Exit(1)
@@ -119,13 +129,34 @@ func (cl *realClient) getHierarchy(nnm string) *api.HierarchyConfiguration {
 	return hier
 }
 
+func (cl *realClient) getAnchorNames(nnm string) []string {
+	var anms []string
+
+	// List all the anchors in the namespace.
+	ul := &unstructured.UnstructuredList{}
+	ul.SetKind(api.AnchorKind)
+	ul.SetAPIVersion(api.AnchorAPIVersion)
+	err := hncClient.Get().Resource(api.Anchors).Namespace(nnm).Do().Into(ul)
+	if err != nil && !errors.IsNotFound(err) {
+		fmt.Printf("Error listing subnamespace anchors for %s: %s\n", nnm, err)
+		os.Exit(1)
+	}
+
+	// Create a list of strings of the anchor names.
+	for _, inst := range ul.Items {
+		anms = append(anms, inst.GetName())
+	}
+
+	return anms
+}
+
 func (cl *realClient) updateHierarchy(hier *api.HierarchyConfiguration, reason string) {
 	nnm := hier.Namespace
 	var err error
 	if hier.CreationTimestamp.IsZero() {
-		err = hncClient.Post().Resource(api.Resource).Namespace(nnm).Name(api.Singleton).Body(hier).Do().Error()
+		err = hncClient.Post().Resource(api.HierarchyConfigurations).Namespace(nnm).Name(api.Singleton).Body(hier).Do().Error()
 	} else {
-		err = hncClient.Put().Resource(api.Resource).Namespace(nnm).Name(api.Singleton).Body(hier).Do().Error()
+		err = hncClient.Put().Resource(api.HierarchyConfigurations).Namespace(nnm).Name(api.Singleton).Body(hier).Do().Error()
 	}
 	if err != nil {
 		fmt.Printf("\nCould not %s.\nReason: %s\n", reason, err)
@@ -133,11 +164,38 @@ func (cl *realClient) updateHierarchy(hier *api.HierarchyConfiguration, reason s
 	}
 }
 
-func childNamespaceExists(hier *api.HierarchyConfiguration, cn string) bool {
-	for _, n := range hier.Spec.RequiredChildren {
-		if cn == n {
-			return true
-		}
+func (cl *realClient) createAnchor(nnm string, hnnm string) {
+	anchor := &api.SubnamespaceAnchor{}
+	anchor.Name = hnnm
+	anchor.Namespace = nnm
+	err := hncClient.Post().Resource(api.Anchors).Namespace(nnm).Name(hnnm).Body(anchor).Do().Error()
+	if err != nil {
+		fmt.Printf("\nCould not create subnamespace anchor.\nReason: %s\n", err)
+		os.Exit(1)
 	}
-	return false
+	fmt.Printf("Successfully created %q subnamespace anchor in %q namespace\n", hnnm, nnm)
+}
+
+func (cl *realClient) getHNCConfig() *api.HNCConfiguration {
+	config := &api.HNCConfiguration{}
+	config.Name = api.HNCConfigSingleton
+	err := hncClient.Get().Resource(api.HNCConfigSingletons).Name(api.HNCConfigSingleton).Do().Into(config)
+	if err != nil && !errors.IsNotFound(err) {
+		fmt.Printf("Error reading the HNC Configuration: %s\n", err)
+		os.Exit(1)
+	}
+	return config
+}
+
+func (cl *realClient) updateHNCConfig(config *api.HNCConfiguration) {
+	var err error
+	if config.CreationTimestamp.IsZero() {
+		err = hncClient.Post().Resource(api.HNCConfigSingletons).Name(api.HNCConfigSingleton).Body(config).Do().Error()
+	} else {
+		err = hncClient.Put().Resource(api.HNCConfigSingletons).Name(api.HNCConfigSingleton).Body(config).Do().Error()
+	}
+	if err != nil {
+		fmt.Printf("\nCould not update the HNC Configuration: %s\n", err)
+		os.Exit(1)
+	}
 }

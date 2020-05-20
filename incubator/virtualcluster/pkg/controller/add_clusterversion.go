@@ -17,10 +17,10 @@ limitations under the License.
 package controller
 
 import (
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/controller/clusterversion"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/controller/clusterversion"
 )
 
 func init() {
 	// AddToManagerFuncs is a list of functions to create controllers and add them to a manager.
-	AddToManagerFuncs = append(AddToManagerFuncs, clusterversion.Add)
+	AddToManagerFuncs[ClusterversionController] = clusterversion.Add
 }

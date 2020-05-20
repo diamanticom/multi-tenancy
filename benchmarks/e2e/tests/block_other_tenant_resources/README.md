@@ -1,4 +1,4 @@
-## Block access to other tenant resources
+# [MTB-PL1-CC-TI-2] Block access to other tenant resources
 
 **Profile Applicability:**
 
@@ -6,7 +6,7 @@ Level 1
 
 **Type:**
 
-Behavioral
+Configuration
 
 **Category:**
 
@@ -24,7 +24,7 @@ Tenant resources should be isolated from other tenants.
 
 Run the following commands to retrieve the list of namespaced resources available in Tenant B
 
-  	kubectl --kubeconfig cluster-admin api-resources --namespaced=true
+  	kubectl --kubeconfig tenant-b api-resources --namespaced=true
 
 For each namespaced resource, and each verb (get, list, create, update, patch, watch, delete, and deletecollection) issue the following command
 	

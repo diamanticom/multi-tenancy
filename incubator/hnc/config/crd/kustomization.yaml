@@ -3,6 +3,8 @@
 # It should be run by config/default
 resources:
 - bases/hnc.x-k8s.io_hierarchyconfigurations.yaml
+- bases/hnc.x-k8s.io_hncconfigurations.yaml
+- bases/hnc.x-k8s.io_subnamespaceanchors.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patchesStrategicMerge:

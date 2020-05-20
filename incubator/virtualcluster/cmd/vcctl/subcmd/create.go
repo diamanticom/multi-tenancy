@@ -25,31 +25,34 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	vcctlutil "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/cmd/vcctl/util"
-	tenancyv1alpha1 "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
-	netutil "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/controller/util/net"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
+	vcctlutil "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/vcctl/util"
+	tenancyv1alpha1 "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
+	kubeutil "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/controller/util/kube"
+	netutil "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/controller/util/net"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
+
+	_ "k8s.io/client-go/plugin/pkg/client/auth/azure"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
 const (
 	DefaultPKIExpireDays = 365
 	APIServerSvcName     = "apiserver-svc"
 
-	// 	apiserverNodePort    = 30443
-	pollStsPeriod  = 2 * time.Second
-	pollStsTimeout = 120 * time.Second
+	pollStsPeriodSec  = 2
+	pollStsTimeoutSec = 120
 )
 
 // Create creates an object based on the file yamlPath
-func Create(yamlPath, vcKbCfg string, minikube bool) error {
+func Create(yamlPath, vcKbCfg string) error {
 	if _, err := os.Stat(vcKbCfg); err == nil {
 		return fmt.Errorf("--vckbcfg %s file exists", vcKbCfg)
 	}
@@ -60,25 +63,21 @@ func Create(yamlPath, vcKbCfg string, minikube bool) error {
 	if err != nil {
 		return err
 	}
-	mgr, err := manager.New(kbCfg,
-		manager.Options{MetricsBindAddress: ":8081"})
+	// create a new scheme that has virtualcluster and clusterversion registered
+	cliScheme := scheme.Scheme
+	err = tenancyv1alpha1.AddToScheme(cliScheme)
 	if err != nil {
 		return err
 	}
 
-	err = tenancyv1alpha1.AddToScheme(mgr.GetScheme())
-	if err != nil {
-		return err
-	}
-
-	obj, err := vcctlutil.YamlToObj(mgr.GetScheme(), yamlPath)
+	obj, err := vcctlutil.YamlToObj(cliScheme, yamlPath)
 	if err != nil {
 		return err
 	}
 
 	// create a new client to talk to apiserver directly
-	// NOTE the client returned by manager.GetClient() will talk to local cache only
-	cli, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	// NOTE the client returned by manager.GetClient() will talk to local cache
+	cli, err := client.New(kbCfg, client.Options{Scheme: cliScheme})
 	if err != nil {
 		return err
 	}
@@ -86,7 +85,7 @@ func Create(yamlPath, vcKbCfg string, minikube bool) error {
 	switch o := obj.(type) {
 	case *tenancyv1alpha1.Virtualcluster:
 		log.Printf("creating Virtualcluster %s", o.Name)
-		err = createVirtualcluster(cli, o, vcKbCfg, minikube)
+		err = createVirtualcluster(cli, o, vcKbCfg)
 		if err != nil {
 			return err
 		}
@@ -103,69 +102,86 @@ func Create(yamlPath, vcKbCfg string, minikube bool) error {
 	return nil
 }
 
+// getAPISvcPort gets the apiserver service port if not specifed
+func getAPISvcPort(svc *v1.Service) (int, error) {
+	if len(svc.Spec.Ports) == 0 {
+		return 0, errors.New("no port is specified for apiserver service ")
+	}
+	if svc.Spec.Ports[0].TargetPort.IntValue() != 0 {
+		return svc.Spec.Ports[0].TargetPort.IntValue(), nil
+	}
+	return int(svc.Spec.Ports[0].Port), nil
+}
+
+// retryIfNotFound retries to call `f` `retry` times if the returned error
+// of `f` is `metav1.StatusReasonNotFound`
+func retryIfNotFound(retry, retryPeriod int, f func() error) error {
+	for retry >= 0 {
+		if err := f(); err != nil {
+			if apierrors.IsNotFound(err) && retry > 0 {
+				retry--
+				<-time.After(time.Duration(retryPeriod) * time.Second)
+				continue
+			}
+			// if other err or having retried too many times
+			return err
+		}
+		// success
+		break
+	}
+	return nil
+}
+
 // createVirtualcluster creates a virtual cluster based on the file yamlPath and
 // generates the kubeconfig file for accessing the virtual cluster
-func createVirtualcluster(cli client.Client, vc *tenancyv1alpha1.Virtualcluster, vcKbCfg string, minikube bool) error {
-	err := cli.Create(context.TODO(), vc)
+func createVirtualcluster(cli client.Client, vc *tenancyv1alpha1.Virtualcluster, vcKbCfg string) error {
+	cv := &tenancyv1alpha1.ClusterVersion{}
+	if err := cli.Get(context.TODO(), types.NamespacedName{
+		Namespace: "default",
+		Name:      vc.Spec.ClusterVersionName,
+	}, cv); err != nil {
+		return err
+	}
+
+	apiSvcPort, err := getAPISvcPort(cv.Spec.APIServer.Service)
 	if err != nil {
 		return err
 	}
 
+	// fail early, if service type is not supported
+	svcType := cv.Spec.APIServer.Service.Spec.Type
+	if svcType != v1.ServiceTypeNodePort &&
+		svcType != v1.ServiceTypeLoadBalancer {
+		return fmt.Errorf("unsupported apiserver service type: %s", svcType)
+	}
+
+	if err := cli.Create(context.TODO(), vc); err != nil {
+		return err
+	}
 	ns := conversion.ToClusterKey(vc)
 
-	// poll etcd StatefulSet
-	err = pollStatefulSet("etcd", ns, cli)
-	if err != nil {
-		return err
+	if err := retryIfNotFound(5, 2, func() error {
+		return kubeutil.WaitStatefulSetReady(cli, ns, "etcd", pollStsTimeoutSec, pollStsPeriodSec)
+	}); err != nil {
+		return fmt.Errorf("cannot find sts/etcd in ns %s: %s", ns, err)
 	}
 	log.Println("etcd is ready")
 
-	// poll apiserver StatefulSet
-	err = pollStatefulSet("apiserver", ns, cli)
-	if err != nil {
-		return err
+	if err := retryIfNotFound(5, 2, func() error {
+		return kubeutil.WaitStatefulSetReady(cli, ns, "apiserver", pollStsTimeoutSec, pollStsPeriodSec)
+	}); err != nil {
+		return fmt.Errorf("cannot find sts/apiserver in ns %s: %s", ns, err)
 	}
 	log.Println("apiserver is ready")
 
-	// poll controller-manager StatefulSet
-	err = pollStatefulSet("controller-manager", ns, cli)
-	if err != nil {
-		return err
+	if err := retryIfNotFound(5, 2, func() error {
+		return kubeutil.WaitStatefulSetReady(cli, ns, "controller-manager", pollStsTimeoutSec, pollStsPeriodSec)
+	}); err != nil {
+		return fmt.Errorf("cannot find sts/controller-manager in ns %s: %s", ns, err)
 	}
 	log.Println("controller-manager is ready")
 
-	return genKubeConfig(ns, vcKbCfg, cli, minikube)
-}
-
-// pollStatefulSet keeps checking if the StatefulSet in `namespace` with `name` is
-// ready. The poll action is proceeded every `pollStsPeriod` and will return timeout
-// error in `pollStsTimeout`.
-func pollStatefulSet(name, namespace string, cli client.Client) error {
-	log.Printf("polling StatefulSet %s/%s", namespace, name)
-	timeout := time.After(pollStsTimeout)
-	for {
-		period := time.After(pollStsPeriod)
-		select {
-		case <-timeout:
-			return fmt.Errorf("poll %s timeout", name)
-		case <-period:
-			sts := &appsv1.StatefulSet{}
-			pollErr := cli.Get(context.TODO(), types.NamespacedName{
-				Namespace: namespace,
-				Name:      name,
-			}, sts)
-			if pollErr != nil {
-				if !apierrors.IsNotFound(pollErr) {
-					return pollErr
-				}
-				log.Println(pollErr)
-			} else {
-				if sts.Status.ReadyReplicas == *sts.Spec.Replicas {
-					return nil
-				}
-			}
-		}
-	}
+	return genKubeConfig(ns, vcKbCfg, cli, svcType, apiSvcPort)
 }
 
 // getVcKubeConfig gets the kubeconfig of the virtual cluster
@@ -189,7 +205,7 @@ func getVcKubeConfig(cli client.Client, clusterNamespace, srtName string) ([]byt
 }
 
 // genKubeConfig generates the kubeconfig file for accessing the virtual cluster
-func genKubeConfig(clusterNamespace, vcKbCfg string, cli client.Client, minikube bool) error {
+func genKubeConfig(clusterNamespace, vcKbCfg string, cli client.Client, svcType v1.ServiceType, apiSvcPort int) error {
 	// get the content of admin.kubeconfig and write to vcKbCfg
 	fn, err := os.OpenFile(vcKbCfg, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
@@ -199,13 +215,12 @@ func genKubeConfig(clusterNamespace, vcKbCfg string, cli client.Client, minikube
 	if err != nil {
 		return err
 	}
-	// replace the server address in kubeconfig if using minikube
-	if minikube == true {
-		kbCfgBytes, err = replaceServerAddr(kbCfgBytes, cli, clusterNamespace)
-		if err != nil {
-			return err
-		}
+	// replace the server address in kubeconfig based on service type
+	kbCfgBytes, err = replaceServerAddr(kbCfgBytes, cli, clusterNamespace, svcType, apiSvcPort)
+	if err != nil {
+		return err
 	}
+
 	n, err := fn.Write(kbCfgBytes)
 	if err != nil {
 		return err
@@ -218,16 +233,29 @@ func genKubeConfig(clusterNamespace, vcKbCfg string, cli client.Client, minikube
 
 // replaceServerAddr replace api server IP with the minikube gateway IP, and
 // disable TLS varification by removing the server CA
-func replaceServerAddr(kubeCfgContent []byte, cli client.Client, clusterNamespace string) ([]byte, error) {
-	minikubeIP, err := getMinikubeIP()
-	if err != nil {
-		return nil, err
+func replaceServerAddr(kubeCfgContent []byte, cli client.Client, clusterNamespace string, svcType v1.ServiceType, apiSvcPort int) ([]byte, error) {
+	var newStr string
+	switch svcType {
+	case v1.ServiceTypeNodePort:
+		nodeIP, err := netutil.GetNodeIP(cli)
+		if err != nil {
+			return nil, err
+		}
+		svcNodePort, err := netutil.GetSvcNodePort(APIServerSvcName,
+			clusterNamespace, cli)
+		if err != nil {
+			return nil, err
+		}
+		newStr = fmt.Sprintf("server: https://%s:%d", nodeIP, svcNodePort)
+	case v1.ServiceTypeLoadBalancer:
+		externalIP, err := netutil.GetLBIP(APIServerSvcName,
+			clusterNamespace, cli)
+		if err != nil {
+			return nil, err
+		}
+		newStr = fmt.Sprintf("server: https://%s:%d", externalIP, apiSvcPort)
 	}
-	svcNodePort, err := netutil.GetSvcNodePort(APIServerSvcName, clusterNamespace, cli)
-	if err != nil {
-		return nil, err
-	}
-	newStr := fmt.Sprintf("server: https://%s:%d", minikubeIP, svcNodePort)
+
 	lines := strings.Split(string(kubeCfgContent), "\n")
 	// remove server CA, disable TLS varification
 	for i := 0; i < len(lines); {

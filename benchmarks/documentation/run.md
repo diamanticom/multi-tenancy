@@ -32,17 +32,21 @@ tenantA:
 go test ./e2e/tests
 ```
 
-
-### Compile the test binary and run the test
-
-This command compiles the test and output to `tests.test` in current directory.
-```shell
-go test -c ./e2e/tests
+#### You can also pass in the path to your  config. The path can either be absolute or a relative file to `benchmarks/e2e/config`
+```shell 
+go test ./e2e/tests -config <path-to-config>
 ```
 
-Run the test:
+### To see a more verbose output from the test
+
 ```shell
-./tests.test 
+go test -v ./e2e/tests
+```
+
+### To run tests according to the Profile Levels (1, 2 and 3)
+
+```shell
+go test -v ./e2e/tests -config <path-to-config> -ginkgo.focus PL<Profile Number>
 ```
 <br/><br/>
 *Read Next >> [Contributing](contributing.md)*

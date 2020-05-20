@@ -24,8 +24,9 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/leaderelection"
 
-	vcinformers "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/client/informers/externalversions/tenancy/v1alpha1"
-	syncerconfig "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/apis/config"
+	vcclient "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/clientset/versioned"
+	vcinformers "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/informers/externalversions/tenancy/v1alpha1"
+	syncerconfig "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/apis/config"
 )
 
 // Config has all the context to run a Syncer.
@@ -34,7 +35,9 @@ type Config struct {
 	ComponentConfig syncerconfig.SyncerConfiguration
 
 	// the general kube client
-	SecretClient           corev1.SecretsGetter
+	SecretClient corev1.SecretsGetter
+	// virtual cluster CR client
+	VirtualClusterClient   vcclient.Interface
 	VirtualClusterInformer vcinformers.VirtualclusterInformer
 
 	// the super master client
@@ -53,6 +56,12 @@ type Config struct {
 
 	// LeaderElection is optional.
 	LeaderElection *leaderelection.LeaderElectionConfig
+
+	// server config.
+	Address  string
+	Port     string
+	CertFile string
+	KeyFile  string
 }
 
 type completedConfig struct {

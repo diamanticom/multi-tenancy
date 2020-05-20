@@ -8,9 +8,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	api "github.com/kubernetes-sigs/multi-tenancy/incubator/hnc/api/v1alpha1"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/hnc/pkg/forest"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/hnc/pkg/metadata"
+	api "sigs.k8s.io/multi-tenancy/incubator/hnc/api/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/hnc/pkg/forest"
+	"sigs.k8s.io/multi-tenancy/incubator/hnc/pkg/metadata"
 )
 
 func TestInheritedFromLabel(t *testing.T) {
@@ -19,12 +19,13 @@ func TestInheritedFromLabel(t *testing.T) {
 	l := zap.Logger(false)
 
 	tests := []struct {
-		name     string
-		oldLabel string
-		oldValue string
-		newLabel string
-		newValue string
-		fail     bool
+		name      string
+		oldLabel  string
+		oldValue  string
+		newLabel  string
+		newValue  string
+		namespace string
+		fail      bool
 	}{{
 		name:     "Regular labels can be changed",
 		oldLabel: "oldLabel", oldValue: "foo",
@@ -46,7 +47,13 @@ func TestInheritedFromLabel(t *testing.T) {
 		name:     "Label is added",
 		newLabel: api.LabelInheritedFrom, newValue: "foo",
 		fail: true,
-	}}
+	}, {
+		name:     "Objects in excluded namespace is ignored",
+		oldLabel: api.LabelInheritedFrom, oldValue: "foo",
+		newLabel: api.LabelInheritedFrom, newValue: "bar",
+		namespace: "hnc-system",
+	},
+	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +62,7 @@ func TestInheritedFromLabel(t *testing.T) {
 			oldInst := &unstructured.Unstructured{}
 			metadata.SetLabel(oldInst, tc.oldLabel, tc.oldValue)
 			inst := &unstructured.Unstructured{}
+			inst.SetNamespace(tc.namespace)
 			metadata.SetLabel(inst, tc.newLabel, tc.newValue)
 
 			// Test

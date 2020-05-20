@@ -17,43 +17,69 @@ limitations under the License.
 package cluster
 
 import (
+	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	restclient "k8s.io/client-go/rest"
 	clientgocache "k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer/reconciler"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
+	vclisters "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/listers/tenancy/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/mccontroller"
 )
 
-// Cluster stores a Kubernetes client, cache, and other cluster-scoped dependencies.
+// Each Cluster object represents a tenant master in Virtual Cluster architecture.
+//
+// Cluster implements the ClusterInterface used by MultiClusterController in
+// sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/mccontroller/mccontroller.go.
+//
+// It stores a Kubernetes client, cache, and other cluster-scoped dependencies.
 // The dependencies are lazily created in getters and cached for reuse.
 // It is not thread safe.
 type Cluster struct {
-	// Name is used to uniquely identify a Cluster in tracing, logging and monitoring.  Name is required.
-	Name string
+	// The root namespace name for this cluster
+	key string
+	// Name of the corresponding virtual cluster object.
+	vcName string
+	// Namespace of the corresponding virtual cluster object.
+	vcNamespace string
+	// UID of the corresponding virtual cluster object.
+	vcUID string
 
 	// Config is the rest.config used to talk to the apiserver.  Required.
-	Config *rest.Config
+	RestConfig *rest.Config
+
+	// vcLister points to the super master virtual cluster informer cache.
+	vclister vclisters.VirtualclusterLister
 
 	// scheme is injected by the controllerManager when controllerManager.Start is called
 	scheme *runtime.Scheme
 
-	//
 	mapper meta.RESTMapper
 
-	// informers are injected by the controllerManager when controllerManager.Start is called
-	cache  cache.Cache
-	client *client.DelegatingClient
+	// informer cache and delegating client for watched tenant master objects
+	cache            cache.Cache
+	delegatingClient *client.DelegatingClient
+
+	// a clientset client for unwatched tenant master objects (rw directly to tenant apiserver)
+	client *clientset.Clientset
+
 	Options
+
+	// a flag indicates that the cluster cache has been synced
+	synced bool
 
 	stopCh chan struct{}
 }
@@ -74,39 +100,83 @@ type CacheOptions struct {
 	Namespace string
 }
 
+var _ mccontroller.ClusterInterface = &Cluster{}
+
 // New creates a new Cluster.
-func New(name string, config *rest.Config, o Options) *Cluster {
-	return &Cluster{Name: name, Config: config, Options: o, stopCh: make(chan struct{})}
+func NewTenantCluster(key, namespace, name, uid string, vclister vclisters.VirtualclusterLister, configBytes []byte, o Options) (*Cluster, error) {
+	clusterRestConfig, err := clientcmd.RESTConfigFromKubeConfig(configBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build rest config: %v", err)
+	}
+
+	if clusterRestConfig.QPS == 0 {
+		clusterRestConfig.QPS = constants.DefaultSyncerClientQPS
+	}
+	if clusterRestConfig.Burst == 0 {
+		clusterRestConfig.Burst = constants.DefaultSyncerClientBurst
+	}
+
+	return &Cluster{
+		key:         key,
+		vcName:      name,
+		vcNamespace: namespace,
+		vcUID:       uid,
+		vclister:    vclister,
+		RestConfig:  clusterRestConfig,
+		Options:     o,
+		synced:      false,
+		stopCh:      make(chan struct{})}, nil
 }
 
-// GetClusterName returns the name given when Cluster c was created.
+// GetClusterName returns the unique cluster name, aka, the root namespace name.
 func (c *Cluster) GetClusterName() string {
-	return c.Name
+	return c.key
 }
 
-// GetScheme returns the default client-go scheme.
-// It is used by other Cluster getters, and to add custom resources to the scheme.
-func (c *Cluster) GetScheme() *runtime.Scheme {
+func (c *Cluster) GetOwnerInfo() (string, string, string) {
+	return c.vcName, c.vcNamespace, c.vcUID
+}
+
+// GetSpec returns the virtual cluster spec.
+func (c *Cluster) GetSpec() (*v1alpha1.VirtualclusterSpec, error) {
+	vc, err := c.vclister.Virtualclusters(c.vcNamespace).Get(c.vcName)
+	if err != nil {
+		return nil, err
+	}
+
+	spec := vc.Spec.DeepCopy()
+	prefixesSet := sets.NewString(spec.OpaqueMetaPrefixes...)
+	if !prefixesSet.Has(constants.DefaultOpaqueMetaPrefix) {
+		spec.OpaqueMetaPrefixes = append(spec.OpaqueMetaPrefixes, constants.DefaultOpaqueMetaPrefix)
+	}
+
+	return spec, nil
+}
+
+func (c *Cluster) getScheme() *runtime.Scheme {
 	return scheme.Scheme
 }
 
-// GetClientInfo returns the cluster client info.
-func (c *Cluster) GetClientInfo() *reconciler.ClusterInfo {
-	return reconciler.NewClusterInfo(c.Name, c.Config)
+// GetClientSet returns a clientset client without any informer caches. All client requests go to apiserver directly.
+func (c *Cluster) GetClientSet() (clientset.Interface, error) {
+	if c.client != nil {
+		return c.client, nil
+	}
+	var err error
+	c.client, err = clientset.NewForConfig(restclient.AddUserAgent(c.RestConfig, constants.ResourceSyncerUserAgent))
+	if err != nil {
+		return nil, err
+	}
+	return c.client, nil
 }
 
-func (c *Cluster) GetClient() (*clientset.Clientset, error) {
-	return clientset.NewForConfig(restclient.AddUserAgent(c.Config, constants.ResourceSyncerUserAgent))
-}
-
-// GetMapper returns a lazily created apimachinery RESTMapper.
-// It is used by other Cluster getters. TODO: consider not exporting.
-func (c *Cluster) GetMapper() (meta.RESTMapper, error) {
+// getMapper returns a lazily created apimachinery RESTMapper.
+func (c *Cluster) getMapper() (meta.RESTMapper, error) {
 	if c.mapper != nil {
 		return c.mapper, nil
 	}
 
-	mapper, err := apiutil.NewDiscoveryRESTMapper(c.Config)
+	mapper, err := apiutil.NewDiscoveryRESTMapper(c.RestConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -115,20 +185,19 @@ func (c *Cluster) GetMapper() (meta.RESTMapper, error) {
 	return mapper, nil
 }
 
-// GetCache returns a lazily created controller-runtime Cache.
-// It is used by other Cluster getters. TODO: consider not exporting.
-func (c *Cluster) GetCache() (cache.Cache, error) {
+// getCache returns a lazily created controller-runtime Cache.
+func (c *Cluster) getCache() (cache.Cache, error) {
 	if c.cache != nil {
 		return c.cache, nil
 	}
 
-	m, err := c.GetMapper()
+	m, err := c.getMapper()
 	if err != nil {
 		return nil, err
 	}
 
-	ca, err := cache.New(c.Config, cache.Options{
-		Scheme:    c.GetScheme(),
+	ca, err := cache.New(c.RestConfig, cache.Options{
+		Scheme:    c.getScheme(),
 		Mapper:    m,
 		Resync:    c.Resync,
 		Namespace: c.Namespace,
@@ -145,23 +214,27 @@ func (c *Cluster) GetCache() (cache.Cache, error) {
 // It is used by other Cluster getters, and by reconcilers.
 // TODO: consider implementing Reader, Writer and StatusClient in Cluster
 // and forwarding to actual delegating client.
-func (c *Cluster) GetDelegatingClient() (*client.DelegatingClient, error) {
-	if c.client != nil {
-		return c.client, nil
+func (c *Cluster) GetDelegatingClient() (client.Client, error) {
+	if !c.synced {
+		return nil, fmt.Errorf("The client cache has not been synced yet.")
 	}
 
-	ca, err := c.GetCache()
+	if c.delegatingClient != nil {
+		return c.delegatingClient, nil
+	}
+
+	ca, err := c.getCache()
 	if err != nil {
 		return nil, err
 	}
 
-	m, err := c.GetMapper()
+	m, err := c.getMapper()
 	if err != nil {
 		return nil, err
 	}
 
-	cl, err := client.New(c.Config, client.Options{
-		Scheme: c.GetScheme(),
+	cl, err := client.New(c.RestConfig, client.Options{
+		Scheme: c.getScheme(),
 		Mapper: m,
 	})
 	if err != nil {
@@ -177,14 +250,14 @@ func (c *Cluster) GetDelegatingClient() (*client.DelegatingClient, error) {
 		StatusClient: cl,
 	}
 
-	c.client = dc
+	c.delegatingClient = dc
 	return dc, nil
 }
 
 // AddEventHandler instructs the Cluster's cache to watch objectType's resource,
 // if it doesn't already, and to add handler as an event handler.
 func (c *Cluster) AddEventHandler(objectType runtime.Object, handler clientgocache.ResourceEventHandler) error {
-	ca, err := c.GetCache()
+	ca, err := c.getCache()
 	if err != nil {
 		return err
 	}
@@ -201,7 +274,7 @@ func (c *Cluster) AddEventHandler(objectType runtime.Object, handler clientgocac
 // Start starts the Cluster's cache and blocks,
 // until an empty struct is sent to the stop channel.
 func (c *Cluster) Start() error {
-	ca, err := c.GetCache()
+	ca, err := c.getCache()
 	if err != nil {
 		return err
 	}
@@ -211,11 +284,16 @@ func (c *Cluster) Start() error {
 // WaitForCacheSync waits for the Cluster's cache to sync,
 // OR until an empty struct is sent to the stop channel.
 func (c *Cluster) WaitForCacheSync() bool {
-	ca, err := c.GetCache()
+	ca, err := c.getCache()
 	if err != nil {
+		klog.Errorf("Fail to get cache: %v", err)
 		return false
 	}
 	return ca.WaitForCacheSync(c.stopCh)
+}
+
+func (c *Cluster) SetSynced() {
+	c.synced = true
 }
 
 // Stop send a msg to stopCh, stop the cache.

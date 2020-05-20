@@ -16,24 +16,61 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"sort"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// Any changes here need to also be reflected in the kubebuilder:validation:Enum comment, below.
-// The meanings of all these constants are defined in the comment to Condition.Code, below.
+// Constants for types and well-known names
 const (
-	CritParentMissing         Code = "CRIT_PARENT_MISSING"
-	CritParentInvalid         Code = "CRIT_PARENT_INVALID"
-	CritRequiredChildConflict Code = "CRIT_REQUIRED_CHILD_CONFLICT"
-	CritAncestor              Code = "CRIT_ANCESTOR"
-	MetaGroup                      = "hnc.x-k8s.io"
-	LabelInheritedFrom             = MetaGroup + "/inheritedFrom"
+	Singleton               = "hierarchy"
+	HierarchyConfigurations = "hierarchyconfigurations"
 )
 
-var (
-	Singleton = "hierarchy"
-	Resource  = "hierarchyconfigurations"
+// Constants for labels and annotations
+const (
+	MetaGroup                  = "hnc.x-k8s.io"
+	LabelInheritedFrom         = MetaGroup + "/inheritedFrom"
+	FinalizerHasOwnedNamespace = MetaGroup + "/hasOwnedNamespace"
 )
+
+// Condition codes. *All* codes must also be documented in the comment to Condition.Code, and must
+// also have an entry in ClearConditionCriteria, set in init() in this file.
+const (
+	CritParentMissing         Code = "CritParentMissing"
+	CritCycle                 Code = "CritCycle"
+	CritAncestor              Code = "CritAncestor"
+	SubnamespaceAnchorMissing Code = "SubnamespaceAnchorMissing"
+	CannotPropagate           Code = "CannotPropagateObject"
+	CannotUpdate              Code = "CannotUpdateObject"
+)
+
+// ClearConditionCriterion describes when a condition should be automatically cleared based on
+// forest changes. See individual constants for better documentation.
+type ClearConditionCriterion int
+
+const (
+	CCCUnknown ClearConditionCriterion = iota
+
+	// CCCManual indicates that the condition should never be cleared automatically, based on the
+	// structure of the forest. Instead, the reconciler that sets the condition is responsible for
+	// clearing it as well.
+	CCCManual
+
+	// CCCAncestor indicates that the condition should always exist in the namespace's ancestors, and
+	// should be cleared if this is no longer true.
+	CCCAncestor
+
+	// CCCSubtree indicates that the condition should always exist in the namespace's subtree (that
+	// is, the namespace itself or any of its descendants), and should be cleared if this is no longer
+	// true.
+	CCCSubtree
+)
+
+// ClearConditionCriteria is initialized in init(). See ClearConditionCriterion for more details.
+var ClearConditionCriteria map[Code]ClearConditionCriterion
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
@@ -57,10 +94,9 @@ type HierarchyConfigurationSpec struct {
 	// Parent indicates the parent of this namespace, if any.
 	Parent string `json:"parent,omitempty"`
 
-	// RequiredChildren indicates the required subnamespaces of this namespace. If they do not exist,
-	// the HNC will create them, allowing users without privileges to create namespaces to get child
-	// namespaces anyway.
-	RequiredChildren []string `json:"requiredChildren,omitempty"`
+	// AllowCascadingDelete indicates if the subnamespaces of this namespace are allowed to cascading
+	// delete.
+	AllowCascadingDelete bool `json:"allowCascadingDelete,omitempty"`
 }
 
 // HierarchyStatus defines the observed state of Hierarchy
@@ -84,24 +120,59 @@ type HierarchyConfigurationList struct {
 	Items           []HierarchyConfiguration `json:"items"`
 }
 
-// Code is a machine-readable string value summarizing the condition.
-// +kubebuilder:validation:Enum=CRIT_PARENT_MISSING;CRIT_PARENT_INVALID;CRIT_REQUIRED_CHILD_CONFLICT;CRIT_ANCESTOR
+// Code is the machine-readable, enum-like type of `Condition.code`. See that field for more
+// information.
 type Code string
 
 // Condition specifies the condition and the affected objects.
 type Condition struct {
-	// Defines the conditions in a machine-readable string value.
-	// Valid values are:
+	// Describes the condition in a machine-readable string value. The currently valid values are
+	// shown below, but new values may be added over time. This field is always present in a
+	// condition.
 	//
-	// - "CRIT_PARENT_MISSING": the specified parent is missing
+	// All codes that begin with the prefix `Crit` indicate that all HNC activities (e.g. propagating
+	// objects, updating labels) have been paused in this namespaces. HNC will resume updating the
+	// namespace once the condition has been resolved. Non-critical conditions typically indicate some
+	// kind of error that HNC itself can ignore, but likely indicates that the hierarchical structure
+	// is out-of-sync with the users' expectations.
 	//
-	// - "CRIT_PARENT_INVALID": the specified parent is invalid (ie would cause a cycle)
+	// If the validation webhooks are working properly, there should typically not be any conditions
+	// on any namespaces, although some may appear transiently when the HNC controller is restarted.
+	// These should quickly resolve themselves (<30s). However, validation webhooks are not perfect,
+	// especially if multiple users are modifying the same namespace trees quickly, so it's important
+	// to monitor for critical conditions and resolve them if they arise. See the user guide for more
+	// information.
 	//
-	// - "CRIT_REQUIRED_CHILD_CONFLICT": there's a conflict (ie in between parent's RequiredChildren spec and child's Parent spec)
+	// Currently, the supported values are:
 	//
-	// - "CRIT_ANCESTOR": a critical error exists in an ancestor namespace, so this namespace is no longer being updated
-	Code Code   `json:"code,omitempty"`
-	Msg  string `json:"msg,omitempty"`
+	// - "CritParentMissing": the specified parent is missing and the namespace is an orphan.
+	//
+	// - "CritCycle": the namespace is a member of a cycle. For example, if namespace B says that its
+	// parent is namespace A, but namespace A says that its parent is namespace B, then A and B are in
+	// a cycle with each other and both of them will have the CritCycle condition.
+	//
+	// - "CritAncestor": a critical error exists in an ancestor namespace, so this namespace is no
+	// longer being updated either.
+	//
+	// - "SubnamespaceAnchorMissing": this namespace is a subnamespace, but the anchor referenced in
+	// its `subnamespaceOf` annotation does not exist in the parent.
+	//
+	// - "CannotPropagateObject": this namespace contains an object that couldn't be propagated *out*
+	// of this namespace, to one or more of this namespace's descendants. If the object couldn't be
+	// propagated to *any* descendants - for example, because it has a finalizer on it (HNC can't
+	// propagate objects with finalizers), the `Affects` field will point to the object in this
+	// namespace. Otherwise, if it couldn't be propagated to *some* descendants, `Affects` will
+	// contain a list of the objects in those descendants that couldn't be created or updated.
+	//
+	// - "CannotUpdateObject": this namespace has an object that couldn't be propagated *into* this
+	// namespace - that is, it couldn't be created in the first place, or it couldn't be updated. The
+	// `Affects` field will point to the source object, which will always be in a namespace that's an
+	// ancestor of this namespace.
+	Code Code `json:"code"`
+
+	// A human-readable description of the condition, if the `code` and `affects` fields are not
+	// sufficiently clear on their own.
+	Msg string `json:"msg,omitempty"`
 
 	// Affects is a list of group-version-kind-namespace-name that uniquely identifies
 	// the object(s) affected by the condition.
@@ -117,6 +188,80 @@ type AffectedObject struct {
 	Name      string `json:"name,omitempty"`
 }
 
+func NewAffectedNamespace(ns string) AffectedObject {
+	return AffectedObject{
+		Version: "v1",
+		Kind:    "Namespace",
+		Name:    ns,
+	}
+}
+
+func NewAffectedObject(gvk schema.GroupVersionKind, ns, nm string) AffectedObject {
+	return AffectedObject{
+		Group:     gvk.Group,
+		Version:   gvk.Version,
+		Kind:      gvk.Kind,
+		Namespace: ns,
+		Name:      nm,
+	}
+}
+
+// String should only be used for debug purposes
+func (a AffectedObject) String() string {
+	// No affected object (i.e. affects this namespace?). Note that this will never be returned by the
+	// API, but it is used internally to indicate that the API doesn't need to show an affected
+	// object.
+	if a.Name == "" {
+		return "<local>"
+	}
+
+	// No namespace -> it *is* a namespace
+	if a.Namespace != "" {
+		return a.Namespace
+	}
+
+	// Generic object (note that Group may be empty for core objects, don't worry about it)
+	return fmt.Sprintf("%s/%s/%s/%s/%s", a.Group, a.Version, a.Kind, a.Namespace, a.Name)
+}
+
+func SortAffectedObjects(objs []AffectedObject) {
+	sort.Slice(objs, func(i, j int) bool {
+		if objs[i].Group != objs[j].Group {
+			return objs[i].Group < objs[j].Group
+		}
+		if objs[i].Version != objs[j].Version {
+			return objs[i].Version < objs[j].Version
+		}
+		if objs[i].Version != objs[j].Version {
+			return objs[i].Version < objs[j].Version
+		}
+		if objs[i].Namespace != objs[j].Namespace {
+			return objs[i].Namespace < objs[j].Namespace
+		}
+		return objs[i].Name < objs[j].Name
+	})
+}
+
 func init() {
 	SchemeBuilder.Register(&HierarchyConfiguration{}, &HierarchyConfigurationList{})
+	ClearConditionCriteria = map[Code]ClearConditionCriterion{
+		// All conditions on namespaces are set/cleared manually by the HCR
+		CritParentMissing:         CCCManual,
+		CritCycle:                 CCCManual,
+		CritAncestor:              CCCManual,
+		SubnamespaceAnchorMissing: CCCManual,
+
+		// A source object can cause the CannotPropagate condition in two ways: if it cannot be
+		// propagated *out* of its original namespace (e.g. because it has a finalizer), or if it cannot
+		// be propagated *into* a descendant namespace. In the former case, the affected object is in
+		// the source namespace; in the latter, it's in a descendant (and the descendant namespace will
+		// have a CannotUpdate condition).
+		CannotPropagate: CCCSubtree,
+
+		// A propagated object can cause the CannotUpdate object in the destination namespace if there's
+		// a reason it cannot be copied into that namespace (e.g. transient errors, HNC has insufficient
+		// privileges, etc). The affected object will always be the source object, which will always be
+		// in an ancestor namespace.
+		CannotUpdate: CCCAncestor,
+	}
 }

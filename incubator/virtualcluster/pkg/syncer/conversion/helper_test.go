@@ -8,7 +8,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 )
 
 func Test_mutateDownwardAPIField(t *testing.T) {
@@ -124,22 +125,18 @@ func Test_mutateDownwardAPIField(t *testing.T) {
 }
 
 func Test_mutateContainerSecret(t *testing.T) {
-	vSASecret := &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "service-token-secret-tenant",
-		},
-		Type: v1.SecretTypeServiceAccountToken,
-	}
 	saSecret := &v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "service-token-secret",
+			Annotations: map[string]string{
+				constants.LabelSecretName: "service-token-secret-tenant",
+			},
 		},
-		Type: v1.SecretTypeServiceAccountToken,
+		Type: v1.SecretTypeOpaque,
 	}
 	for _, tt := range []struct {
 		name              string
 		container         *v1.Container
-		vSASecret         *v1.Secret
 		saSecret          *v1.Secret
 		expectedContainer *v1.Container
 	}{
@@ -159,8 +156,7 @@ func Test_mutateContainerSecret(t *testing.T) {
 					},
 				},
 			},
-			vSASecret: vSASecret,
-			saSecret:  saSecret,
+			saSecret: saSecret,
 			expectedContainer: &v1.Container{
 				VolumeMounts: []v1.VolumeMount{
 					{
@@ -178,7 +174,7 @@ func Test_mutateContainerSecret(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(tc *testing.T) {
-			mutateContainerSecret(tt.container, tt.vSASecret, tt.saSecret)
+			mutateContainerSecret(tt.container, tt.saSecret)
 			if !equality.Semantic.DeepEqual(tt.container, tt.expectedContainer) {
 				tc.Errorf("expected container %+v, got %+v", tt.expectedContainer, tt.container)
 			}
@@ -193,23 +189,15 @@ func TestToClusterKey(t *testing.T) {
 		expectedKey string
 	}{
 		{
-			name: "vc without namespace",
-			vc: &v1alpha1.Virtualcluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "name",
-				},
-			},
-			expectedKey: "name",
-		},
-		{
 			name: "normal vc",
 			vc: &v1alpha1.Virtualcluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "name",
 					Namespace: "ns",
+					UID:       "d64ea0c0-91f8-46f5-8643-c0cab32ab0cd",
 				},
 			},
-			expectedKey: "ns-name",
+			expectedKey: "ns-fd1b34-name",
 		},
 	} {
 		t.Run(tt.name, func(tc *testing.T) {

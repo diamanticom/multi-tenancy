@@ -19,6 +19,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 
 	"k8s.io/apiserver/pkg/util/term"
@@ -30,9 +33,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	syncerconfig "github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/config"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/options"
-	"github.com/kubernetes-sigs/multi-tenancy/incubator/virtualcluster/pkg/syncer"
+	syncerconfig "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/config"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/options"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer"
 )
 
 func NewSyncerCommand(stopChan <-chan struct{}) *cobra.Command {
@@ -84,7 +87,9 @@ resource isolation policy specified in Tenant CRD.`,
 }
 
 func Run(cc *syncerconfig.CompletedConfig, stopCh <-chan struct{}) error {
-	ss := syncer.New(cc.SecretClient,
+	ss := syncer.New(&cc.ComponentConfig,
+		cc.SecretClient,
+		cc.VirtualClusterClient,
 		cc.VirtualClusterInformer,
 		cc.SuperMasterClient,
 		cc.SuperMasterInformerFactory)
@@ -101,14 +106,11 @@ func Run(cc *syncerconfig.CompletedConfig, stopCh <-chan struct{}) error {
 	// Wait for all caches to sync before resource sync.
 	cc.SuperMasterInformerFactory.WaitForCacheSync(stopCh)
 
-	// Prepare a reusable runCommand function.
-	run := func(ctx context.Context) {
-		ss.Run()
-		<-ctx.Done()
-	}
-
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
+
+	// Prepare a reusable runCommand function.
+	run := startSyncer(ctx, ss, cc, stopCh)
 
 	go func() {
 		select {
@@ -138,4 +140,22 @@ func Run(cc *syncerconfig.CompletedConfig, stopCh <-chan struct{}) error {
 	// Leader election is disabled, so runCommand inline until done.
 	run(ctx)
 	return fmt.Errorf("finished without leader elect")
+}
+
+func startSyncer(ctx context.Context, s syncer.Bootstrap, cc *syncerconfig.CompletedConfig, stopCh <-chan struct{}) func(context.Context) {
+	return func(ctx context.Context) {
+		s.Run(stopCh)
+		go func() {
+			s.ListenAndServe(net.JoinHostPort(cc.Address, cc.Port), cc.CertFile, cc.KeyFile)
+		}()
+		go func() {
+			// start a pprof http server
+			klog.Fatal(http.ListenAndServe(":6060", nil))
+		}()
+		go func() {
+			// start a health port.
+			klog.Fatal(http.ListenAndServe(":8080", nil))
+		}()
+		<-ctx.Done()
+	}
 }

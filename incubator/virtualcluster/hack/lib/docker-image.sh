@@ -23,12 +23,19 @@ get_docker_wrapped_binaries() {
   local arch=$1
   local debian_base_version=v1.0.0
   local debian_iptables_version=v11.0.2
-  ### If you change any of these lists, please also update VC_ALL_TARGETS
-  local targets=(
-    manager,"${VC_BASE_IMAGE_REGISTRY}/debian-base-${arch}:${debian_base_version}"
-    syncer,"${VC_BASE_IMAGE_REGISTRY}/debian-base-${arch}:${debian_base_version}"
-    vn-agent,"${VC_BASE_IMAGE_REGISTRY}/debian-base-${arch}:${debian_base_version}"
-  )
+  local targets=()
+  for target in ${@:2}; do
+      targets+=($target,${VC_BASE_IMAGE_REGISTRY}/debian-base-${arch}:${debian_base_version})
+  done
+
+  if [ ${#targets[@]} -eq 0 ]; then
+    ### If you change any of these lists, please also update VC_ALL_TARGETS
+    targets=(
+      manager,"${VC_BASE_IMAGE_REGISTRY}/debian-base-${arch}:${debian_base_version}"
+      syncer,"${VC_BASE_IMAGE_REGISTRY}/debian-base-${arch}:${debian_base_version}"
+      vn-agent,"${VC_BASE_IMAGE_REGISTRY}/debian-base-${arch}:${debian_base_version}"
+    )
+  fi
 
   echo "${targets[@]}"
 }
@@ -42,7 +49,7 @@ create_docker_image() {
   local binary_dir="$1"
   local arch="$2"
   local binary_name
-  local binaries=($(get_docker_wrapped_binaries "${arch}"))
+  local binaries=($(get_docker_wrapped_binaries "${arch}" "${@:3}"))
 
   for wrappable in "${binaries[@]}"; do
 
@@ -52,7 +59,13 @@ create_docker_image() {
     IFS=$oldifs
 
     local binary_name="$1"
-    local base_image="$2"
+    local base_image=$2
+    local image_user=""
+    BASE_IMAGE=${BASE_IMAGE:-debian}
+    if [ "$BASE_IMAGE" == "distroless" ]; then
+      base_image="gcr.io/distroless/static:nonroot"
+      image_user="USER nonroot:nonroot"
+    fi
     local docker_build_path="${binary_dir}/${binary_name}.dockerbuild"
     local docker_file_path="${docker_build_path}/Dockerfile"
     local binary_file_path="${binary_dir}/${binary_name}"
@@ -66,6 +79,7 @@ create_docker_image() {
       cat <<EOF > "${docker_file_path}"
 FROM ${base_image}
 COPY ${binary_name} /usr/local/bin/${binary_name}
+${image_user}
 EOF
       "${DOCKER[@]}" build -q -t "${docker_image_tag}" "${docker_build_path}" >/dev/null
     ) &
@@ -81,7 +95,18 @@ build_images() {
   rm -rf "${VC_RELEASE_DIR}"
   mkdir -p "${VC_RELEASE_DIR}"
   cd ${VC_BIN_DIR}
-  cp "${VC_ALL_BINARIES[@]/#/}" ${VC_RELEASE_DIR}
+  local targets=()
 
-  create_docker_image "${VC_RELEASE_DIR}" "amd64"
+  for arg; do
+    targets+=(${arg##*/})
+  done
+  echo "${targets[@]-}"
+  
+  if [ ${#targets[@]} -eq 0 ]; then
+    cp "${VC_ALL_BINARIES[@]/#/}" ${VC_RELEASE_DIR}
+  else
+    cp ${targets[@]} ${VC_RELEASE_DIR}
+  fi
+
+  create_docker_image "${VC_RELEASE_DIR}" "amd64" "${targets[@]-}"
 }

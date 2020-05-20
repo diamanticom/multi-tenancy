@@ -18,40 +18,56 @@ package kubectl
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	api "github.com/kubernetes-sigs/multi-tenancy/incubator/hnc/api/v1alpha1"
+	api "sigs.k8s.io/multi-tenancy/incubator/hnc/api/v1alpha1"
 )
 
 //hcUpdates struct stores name of namespaces against type of flag passed
 type hcUpdates struct {
-	root             bool
-	parent           string
-	requiredChildren []string
-	optionalChildren []string
+	root     bool
+	parent   string
+	allowCD  bool
+	forbidCD bool
 }
 
 var setCmd = &cobra.Command{
-	Use:   "set <namespace>",
+	Use:   "set NAMESPACE",
 	Short: "Sets hierarchical properties of the given namespace",
-	Args:  cobra.ExactArgs(1),
+	Example: `	# Make 'foo' the parent of 'bar'
+	kubectl hns set bar --parent foo
+	kubectl hns set bar -p foo
+
+	# Make 'foo' a root (remove 'bar' as its parent)
+	kubectl hns set bar --root
+	kubectl hns set bar -r
+
+	# Not allowed: give 'bar' a parent and make it a root at the same time
+	kubectl hns set bar --root --parent foo # error
+
+	# Allow 'foo', or any of its descendants, to be cascading deleted
+	kubectl hns set foo --allowCascadingDelete
+	kubectl hns set foo -a
+
+	# Forbids cascading deletion on 'foo' and its subtree (unless specifically
+	# allowed on any descendants).
+	kubectl hns set foo --forbidCascadingDelete
+	kubectl hns set foo -f`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		nnm := args[0]
 		flags := cmd.Flags()
 		parent, _ := flags.GetString("parent")
-		requiredChildren, _ := flags.GetStringArray("requiredChild")
-		optionalChildren, _ := flags.GetStringArray("optionalChild")
-		requiredChildren = normalizeStringArray(requiredChildren)
-		optionalChildren = normalizeStringArray(optionalChildren)
+		allowCD, _ := flags.GetBool("allowCascadingDelete")
+		forbidCD, _ := flags.GetBool("forbidCascadingDelete")
 
 		updates := hcUpdates{
-			root:             flags.Changed("root"),
-			parent:           parent,
-			requiredChildren: requiredChildren,
-			optionalChildren: optionalChildren,
+			root:     flags.Changed("root"),
+			parent:   parent,
+			allowCD:  allowCD,
+			forbidCD: forbidCD,
 		}
 
 		updateHC(client, updates, nnm)
@@ -76,13 +92,7 @@ func updateHC(cl Client, updates hcUpdates, nnm string) {
 		setParent(hc, oldpnm, updates.parent, nnm, &numChanges)
 	}
 
-	if len(updates.requiredChildren) != 0 {
-		setRequiredChildren(hc, updates.requiredChildren, nnm, &numChanges)
-	}
-
-	if len(updates.optionalChildren) != 0 {
-		setOptionalChildren(hc, updates.optionalChildren, nnm, &numChanges)
-	}
+	setAllowCascadingDelete(hc, nnm, updates.allowCD, updates.forbidCD, &numChanges)
 
 	if numChanges > 0 {
 		cl.updateHierarchy(hc, fmt.Sprintf("update the hierarchical configuration of %s", nnm))
@@ -120,44 +130,28 @@ func setParent(hc *api.HierarchyConfiguration, oldpnm, pnm, nnm string, numChang
 	}
 }
 
-func setRequiredChildren(hc *api.HierarchyConfiguration, rcns []string, nnm string, numChanges *int) {
-	for _, rcn := range rcns {
-		if childNamespaceExists(hc, rcn) {
-			fmt.Printf("Required child %s already present in %s\n", rcn, nnm)
-			continue
-		}
-		hc.Spec.RequiredChildren = append(hc.Spec.RequiredChildren, rcn)
-		fmt.Printf("Adding required child (subnamespace) %s to %s\n", rcn, nnm)
-		*numChanges++
-	}
-	sort.Strings(hc.Spec.RequiredChildren)
-}
-
-func setOptionalChildren(hc *api.HierarchyConfiguration, ocns []string, nnm string, numChanges *int) {
-	existingRCs := map[string]bool{}
-	for _, rc := range hc.Spec.RequiredChildren {
-		existingRCs[rc] = true
+func setAllowCascadingDelete(hc *api.HierarchyConfiguration, nnm string, allow, forbid bool, numChanges *int) {
+	if allow && forbid {
+		fmt.Printf("Cannot set both --allowCascadingDelete and --forbidCascadingDelete\n")
+		os.Exit(1)
 	}
 
-	for _, oc := range ocns {
-		if existingRCs[oc] {
-			fmt.Printf("Making %s a regular child of %s\n", oc, nnm)
-			delete(existingRCs, oc)
-			*numChanges++
-		} else {
-			fmt.Printf("%s is not a required child of %s\n", oc, nnm)
-		}
+	if !allow && !forbid {
+		// nothing specified
+		return
 	}
 
-	newRCs := []string{}
-	for k, _ := range existingRCs {
-		newRCs = append(newRCs, k)
-	}
-	if len(newRCs) == 0 {
-		hc.Spec.RequiredChildren = nil
+	// We now know that allow != forbid, so we can just look at allow
+	if hc.Spec.AllowCascadingDelete == allow {
+		fmt.Printf("Cascading deletion for '%s' is already set to %t; unchanged\n", nnm, allow)
 	} else {
-		sort.Strings(newRCs)
-		hc.Spec.RequiredChildren = newRCs
+		hc.Spec.AllowCascadingDelete = allow
+		if allow {
+			fmt.Printf("Allowing cascading deletion on '%s'\n", nnm)
+		} else {
+			fmt.Printf("Forbidding cascading deletion on '%s'\n", nnm)
+		}
+		*numChanges++
 	}
 }
 
@@ -172,9 +166,9 @@ func normalizeStringArray(in []string) []string {
 }
 
 func newSetCmd() *cobra.Command {
-	setCmd.Flags().Bool("root", false, "Turns namespace into root namespace")
-	setCmd.Flags().String("parent", "", "Parent namespace")
-	setCmd.Flags().StringArray("requiredChild", []string{""}, "Specifies a required child (subnamespace). If the child does not exist, it will be created. Multiple values may be comma delimited.")
-	setCmd.Flags().StringArray("optionalChild", []string{""}, "Turns a required child namespaces into optional child namespaces. Multiple values may be comma delimited.")
+	setCmd.Flags().BoolP("root", "r", false, "Removes the current parent namespace, making this namespace a root")
+	setCmd.Flags().StringP("parent", "p", "", "Sets the parent namespace")
+	setCmd.Flags().BoolP("allowCascadingDelete", "a", false, "Allows cascading deletion of its subnamespaces.")
+	setCmd.Flags().BoolP("forbidCascadingDelete", "f", false, "Protects cascading deletion of its subnamespaces.")
 	return setCmd
 }

@@ -24,13 +24,14 @@ import (
 )
 
 var describeCmd = &cobra.Command{
-	Use:   "describe",
+	Use:   "describe NAMESPACE",
 	Short: "Displays information about the hierarchy configuration",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		nnm := args[0]
 		fmt.Printf("Hierarchy configuration for namespace %s\n", nnm)
 		hier := client.getHierarchy(nnm)
+		anms := client.getAnchorNames(nnm)
 
 		// Parent
 		if hier.Spec.Parent != "" {
@@ -44,11 +45,11 @@ var describeCmd = &cobra.Command{
 		for _, cn := range hier.Status.Children {
 			childrenAndStatus[cn] = ""
 		}
-		for _, cn := range hier.Spec.RequiredChildren {
+		for _, cn := range anms {
 			if _, ok := childrenAndStatus[cn]; ok {
-				childrenAndStatus[cn] = "required"
+				childrenAndStatus[cn] = "subnamespace"
 			} else {
-				childrenAndStatus[cn] = "MISSING"
+				childrenAndStatus[cn] = "missing subnamespace"
 			}
 		}
 		if len(childrenAndStatus) > 0 {
@@ -79,13 +80,13 @@ var describeCmd = &cobra.Command{
 			if len(c.Affects) == 0 {
 				continue
 			}
-			fmt.Printf("    - Affected by this condition:\n")
+			fmt.Printf("    Affected by this condition:\n")
 			for _, a := range c.Affects {
 				if a.Name != "" {
 					if a.Group == "" {
 						a.Group = "core"
 					}
-					fmt.Printf("      - %s/%s (%s/%s/%s\n", a.Namespace, a.Name, a.Group, a.Version, a.Kind)
+					fmt.Printf("      - %s/%s (%s/%s/%s)\n", a.Namespace, a.Name, a.Group, a.Version, a.Kind)
 				} else {
 					fmt.Printf("      - %s\n", a.Namespace)
 				}

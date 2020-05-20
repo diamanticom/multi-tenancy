@@ -17,16 +17,58 @@ limitations under the License.
 package controller
 
 import (
-	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"fmt"
+
+	vcmanager "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/controller/vcmanager"
 )
 
+type ControllerName int
+
+const (
+	VirtualclusterController ControllerName = iota
+	ClusterversionController
+)
+
+func (cn ControllerName) String() string {
+	switch cn {
+	case VirtualclusterController:
+		return "VirtualclusterController"
+	case ClusterversionController:
+		return "ClusterversionController"
+	default:
+		return fmt.Sprintf("%d", cn)
+	}
+}
+
 // AddToManagerFuncs is a list of functions to add all Controllers to the Manager
-var AddToManagerFuncs []func(manager.Manager) error
+var AddToManagerFuncs = make(map[ControllerName]func(*vcmanager.VirtualclusterManager, string) error)
 
 // AddToManager adds all Controllers to the Manager
-func AddToManager(m manager.Manager) error {
-	for _, f := range AddToManagerFuncs {
-		if err := f(m); err != nil {
+func AddToManager(m *vcmanager.VirtualclusterManager, masterProvisioner string) error {
+	// add controller based the type of the masterProvisioner
+	switch masterProvisioner {
+	case "native":
+		f, exist := AddToManagerFuncs[VirtualclusterController]
+		if !exist {
+			return fmt.Errorf("%s not found", VirtualclusterController)
+		}
+		if err := f(m, masterProvisioner); err != nil {
+			return err
+		}
+
+		f, exist = AddToManagerFuncs[ClusterversionController]
+		if !exist {
+			return fmt.Errorf("%s not found", ClusterversionController)
+		}
+		if err := f(m, masterProvisioner); err != nil {
+			return err
+		}
+	case "aliyun":
+		f, exist := AddToManagerFuncs[VirtualclusterController]
+		if !exist {
+			return fmt.Errorf("%s not found", VirtualclusterController)
+		}
+		if err := f(m, masterProvisioner); err != nil {
 			return err
 		}
 	}
